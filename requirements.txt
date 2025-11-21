@@ -1,0 +1,8 @@
+# 核心依赖
+pywin32>=306
+psutil>=5.9.0
+
+# 打包工具 (Nuitka)
+nuitka>=2.0
+ordered-set
+zstandard
