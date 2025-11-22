@@ -6,3 +6,5 @@ keyboard>=0.13.5
 nuitka>=2.0
 ordered-set
 zstandard
+pystray>=0.19.5
+Pillow>=10.0.0

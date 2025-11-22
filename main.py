@@ -4,7 +4,10 @@ from datetime import datetime
 import os
 import sys
 import winreg
-import keyboard  # --- 新增依赖 ---
+import threading
+import keyboard
+import pystray  # --- 新增依赖: 系统托盘 ---
+from PIL import Image  # --- 新增依赖: 图片处理 ---
 from storage import StorageManager
 from watcher import WindowWatcher
 
@@ -193,7 +196,7 @@ class SettingsDialog(tk.Toplevel):
         # Hotkey Hint
         frame_hotkey = tk.Frame(self.page_general, bg=self.colors["bg"], pady=10)
         frame_hotkey.pack(fill="x", padx=20)
-        tk.Label(frame_hotkey, text="全局快捷键: ctrl+~(快速呼出)",
+        tk.Label(frame_hotkey, text="全局快捷键: Ctrl + Alt + S (快速呼出)",
                  bg=self.colors["bg"], fg="#4a90e2", font=("Arial", 10, "bold")).pack(anchor="w")
 
         # Boot
@@ -301,17 +304,16 @@ class SafeDraftApp:
     def __init__(self, root):
         self.root = root
 
-        # --- 初始化状态变量 ---
         self.is_topmost = False
         self.topmost_timer = None
+        self.tray_icon = None  # 托盘图标对象
 
         self.db = StorageManager()
         self.watcher = WindowWatcher(self.db, self.on_trigger_detected)
         self.watcher.start()
 
-        # --- 注册全局热键 Ctrl+Alt+S ---
         try:
-            keyboard.add_hotkey('ctrl+~', self.on_global_hotkey)
+            keyboard.add_hotkey('ctrl+alt+s', self.on_global_hotkey)
         except Exception as e:
             print(f"Hotkey register failed: {e}")
 
@@ -328,7 +330,6 @@ class SafeDraftApp:
         self.root.geometry("500x400+100+100")
         self.root.attributes("-alpha", 0.95)
 
-        # 优化图标加载逻辑：优先 .ico
         try:
             if os.path.exists("icon.ico"):
                 self.root.iconbitmap("icon.ico")
@@ -389,8 +390,81 @@ class SafeDraftApp:
 
     def setup_events(self):
         self.text_area.bind("<KeyRelease>", self.on_key_release)
+        # 拦截关闭窗口事件
         self.root.protocol("WM_DELETE_WINDOW", self.on_close)
 
+    # --- 核心：托盘与退出逻辑 ---
+    def on_close(self):
+        """用户点击关闭时的确认逻辑"""
+        # askyesnocancel 返回值: True(是), False(否), None(取消)
+        res = messagebox.askyesnocancel(
+            "退出确认",
+            "是否要保持后台运行？\n\n【是】最小化到系统托盘 (推荐)\n【否】彻底退出程序\n【取消】手滑了"
+        )
+
+        if res is True:
+            self.minimize_to_tray()
+        elif res is False:
+            self.quit_app()
+        # None: 什么都不做
+
+    def minimize_to_tray(self):
+        """最小化到系统托盘"""
+        self.root.withdraw()  # 隐藏主窗口
+
+        # 加载托盘图标 (pystray 需要 PIL Image 对象)
+        try:
+            if os.path.exists("icon.png"):
+                image = Image.open("icon.png")
+            elif os.path.exists("icon.ico"):
+                image = Image.open("icon.ico")
+            else:
+                # 如果没有图标，生成一个简单的色块
+                image = Image.new('RGB', (64, 64), color=(74, 144, 226))
+        except Exception:
+            image = Image.new('RGB', (64, 64), color=(74, 144, 226))
+
+        # 定义托盘菜单
+        def on_tray_quit(icon, item):
+            icon.stop()
+            self.root.after(0, self.quit_app)
+
+        def on_tray_show(icon, item):
+            icon.stop()
+            self.root.after(0, self.restore_from_tray)
+
+        menu = (
+            pystray.MenuItem('显示主界面', on_tray_show, default=True),
+            pystray.MenuItem('彻底退出', on_tray_quit)
+        )
+
+        self.tray_icon = pystray.Icon("SafeDraft", image, "SafeDraft", menu)
+
+        # 在独立线程运行托盘，防止阻塞 Tkinter 主循环
+        # 注意：Tkinter 隐藏后，mainloop 仍在运行处理其他事件(如 keyboard)
+        threading.Thread(target=self.tray_icon.run, daemon=True).start()
+
+    def restore_from_tray(self):
+        """从托盘恢复"""
+        if self.tray_icon:
+            # 停止托盘图标线程（图标会消失）
+            self.tray_icon.stop()
+            self.tray_icon = None
+
+        self.root.deiconify()
+        self.root.lift()
+        self.root.focus_force()
+
+    def quit_app(self):
+        """彻底退出"""
+        if self.tray_icon:
+            self.tray_icon.stop()
+        self.watcher.stop()
+        self.db.close()
+        self.root.destroy()
+        os._exit(0)
+
+    # --- 其他功能 ---
     def on_key_release(self, event):
         content = self.text_area.get("1.0", "end-1c")
         self.db.save_content(content)
@@ -425,27 +499,26 @@ class SafeDraftApp:
     def open_settings(self):
         SettingsDialog(self.root, self.db, self.watcher, self)
 
-    # --- 热键回调 ---
     def on_global_hotkey(self):
-        # keyboard 线程调用，需要转回主线程更新 UI
         self.root.after(0, self._perform_auto_pop_force)
 
     def _perform_auto_pop_force(self):
-        """热键触发的强制弹出"""
-        if self.root.state() == 'iconic':
-            self.root.deiconify()
-
-        self.root.lift()  # 提升窗口层级
-        self.root.focus_force()  # 强制获取焦点
+        # 强制恢复（如果最小化到了托盘，也要恢复）
+        self.restore_from_tray()
         self._start_auto_topmost()
 
-    # --- 自动弹出 (Watcher触发) ---
     def on_trigger_detected(self):
         self.root.after(0, self._perform_auto_pop)
 
     def _perform_auto_pop(self):
         if self.is_topmost and not self.topmost_timer: return
-        if self.root.state() == 'iconic': self.root.deiconify()
+
+        # 如果在托盘里，恢复它
+        if self.root.state() == 'withdrawn':
+            self.restore_from_tray()
+        elif self.root.state() == 'iconic':
+            self.root.deiconify()
+
         if self.root.focus_displayof() is None:
             self.root.geometry("+100+100")
         self._start_auto_topmost()
@@ -473,12 +546,6 @@ class SafeDraftApp:
             self.btn_top.config(text="📌 已强制锁定", bg="#4a90e2", fg="white")
             if self.topmost_timer: self.root.after_cancel(self.topmost_timer)
             self.topmost_timer = None
-
-    def on_close(self):
-        self.watcher.stop()
-        self.db.close()
-        self.root.destroy()
-        os._exit(0)  # 确保 keyboard 线程也彻底退出
 
 
 if __name__ == "__main__":
