@@ -3,7 +3,7 @@ import os
 import sys
 from datetime import datetime, timedelta
 
-# 默认触发器
+# 默认触发器配置
 DEFAULT_TRIGGERS = [
     ("title", "ChatGPT", 1),
     ("title", "Claude", 1),
@@ -17,22 +17,44 @@ DEFAULT_TRIGGERS = [
 
 class StorageManager:
     def __init__(self, db_name="safedraft.db"):
-        # --- 核心修复：获取绝对路径 ---
-        if getattr(sys, 'frozen', False):
-            # 如果是打包后的 .exe 运行
-            base_path = os.path.dirname(sys.executable)
-        else:
-            # 如果是 .py 脚本运行
-            base_path = os.path.dirname(os.path.abspath(__file__))
+        # --- 终极路径修复逻辑 ---
+        self.base_path = self.get_real_executable_path()
+        self.db_path = os.path.join(self.base_path, db_name)
 
-        # 拼接出数据库的绝对路径
-        self.db_path = os.path.join(base_path, db_name)
-        # ---------------------------
+        # [调试功能]：在数据库同级目录生成一个调试文件，告诉你它到底认定了哪个路径
+        # 确认 bug 修复后，可以将下面这两行注释掉
+        try:
+            debug_file = os.path.join(self.base_path, "_path_debug.txt")
+            with open(debug_file, "w", encoding="utf-8") as f:
+                f.write(f"Time: {datetime.now()}\n")
+                f.write(f"Detected Base Path: {self.base_path}\n")
+                f.write(f"DB Path: {self.db_path}\n")
+                f.write(f"Sys Executable: {sys.executable}\n")
+                f.write(f"Sys Argv[0]: {sys.argv[0]}\n")
+        except:
+            pass
+        # -----------------------
 
         self.conn = sqlite3.connect(self.db_path, check_same_thread=False)
         self.cursor = self.conn.cursor()
         self._init_db()
         self.current_session_id = None
+
+    def get_real_executable_path(self):
+        """
+        获取真实的 .exe 所在目录，抵抗 Nuitka/PyInstaller 的临时目录解压机制。
+        """
+        # 方案 A: 针对 Nuitka/PyInstaller 打包后的环境
+        if getattr(sys, 'frozen', False) or "__compiled__" in globals():
+            # 这里的逻辑是：sys.argv[0] 在打包后通常是 .exe 的绝对路径
+            # 而 sys.executable 在某些打包模式下可能指向引导程序
+            # 我们优先信任 sys.argv[0]
+            candidate = os.path.abspath(sys.argv[0])
+            return os.path.dirname(candidate)
+
+        # 方案 B: 开发环境 (.py 脚本)
+        else:
+            return os.path.dirname(os.path.abspath(__file__))
 
     def _init_db(self):
         # 1. 草稿表
@@ -83,9 +105,7 @@ class StorageManager:
         self.conn.commit()
 
     # --- 核心：保存逻辑 ---
-
     def save_content(self, content):
-        """自动保存：更新当前会话或新建"""
         if not content.strip(): return
         now = datetime.now()
         should_create_new = False
@@ -118,7 +138,6 @@ class StorageManager:
         self.conn.commit()
 
     def save_content_forced(self, content):
-        """手动保存并清空"""
         if not content.strip(): return
         now = datetime.now()
         self.cursor.execute('INSERT INTO drafts (content, created_at, last_updated_at) VALUES (?, ?, ?)',
@@ -127,7 +146,7 @@ class StorageManager:
         self.conn.commit()
 
     def save_snapshot(self, content):
-        """Ctrl+S 快照保存"""
+        """Ctrl+S 快照"""
         if not content.strip(): return
         now = datetime.now()
         self.cursor.execute('INSERT INTO drafts (content, created_at, last_updated_at) VALUES (?, ?, ?)',

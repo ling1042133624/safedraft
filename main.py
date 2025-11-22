@@ -14,17 +14,24 @@ if sys.platform == "win32":
     import winreg
 
 
-# --- 核心修复：获取资源绝对路径 ---
-def get_resource_path(relative_path):
-    """获取文件的绝对路径，兼容开发环境和打包后的 EXE"""
+# ---------------------------------------------------------
+# 核心路径修复：与 storage.py 保持完全一致的逻辑
+# ---------------------------------------------------------
+def get_asset_path(filename):
+    """
+    获取资源文件的绝对路径。
+    优先使用 sys.argv[0] (EXE所在路径)，确保与数据库路径一致。
+    """
     if getattr(sys, 'frozen', False):
-        base_path = os.path.dirname(sys.executable)
+        # 打包后的 EXE 环境
+        base_path = os.path.dirname(os.path.abspath(sys.argv[0]))
     else:
+        # 开发环境
         base_path = os.path.dirname(os.path.abspath(__file__))
-    return os.path.join(base_path, relative_path)
+    return os.path.join(base_path, filename)
 
 
-# --------------------------------
+# ---------------------------------------------------------
 
 # --- 主题定义 ---
 THEMES = {
@@ -84,7 +91,9 @@ class StartupManager:
             try:
                 key = winreg.OpenKey(winreg.HKEY_CURRENT_USER, StartupManager.WIN_KEY_PATH, 0, winreg.KEY_ALL_ACCESS)
                 if enable:
-                    winreg.SetValueEx(key, StartupManager.APP_NAME, 0, winreg.REG_SZ, sys.executable)
+                    # 注意：这里也需要写入 sys.argv[0] 以确保开机启动的是那个 exe
+                    exe_path = os.path.abspath(sys.argv[0])
+                    winreg.SetValueEx(key, StartupManager.APP_NAME, 0, winreg.REG_SZ, exe_path)
                 else:
                     try:
                         winreg.DeleteValue(key, StartupManager.APP_NAME)
@@ -112,9 +121,9 @@ class HistoryWindow(tk.Toplevel):
         self.load_icon()
 
     def load_icon(self):
-        # --- 修复：使用绝对路径加载图标 ---
-        ico_path = get_resource_path("icon.ico")
-        png_path = get_resource_path("icon.png")
+        # 使用统一的路径获取函数
+        ico_path = get_asset_path("icon.ico")
+        png_path = get_asset_path("icon.png")
         try:
             if sys.platform == "win32" and os.path.exists(ico_path):
                 self.iconbitmap(ico_path)
@@ -212,9 +221,9 @@ class SettingsDialog(tk.Toplevel):
         self.setup_general_ui()
 
     def load_icon(self):
-        # --- 修复：使用绝对路径加载图标 ---
-        ico_path = get_resource_path("icon.ico")
-        png_path = get_resource_path("icon.png")
+        # 使用统一的路径获取函数
+        ico_path = get_asset_path("icon.ico")
+        png_path = get_asset_path("icon.png")
         try:
             if sys.platform == "win32" and os.path.exists(ico_path):
                 self.iconbitmap(ico_path)
@@ -393,9 +402,9 @@ class SafeDraftApp:
         alpha = float(self.db.get_setting("window_alpha", "0.95"))
         self.root.attributes("-alpha", alpha)
 
-        # --- 修复：使用绝对路径加载图标 ---
-        ico_path = get_resource_path("icon.ico")
-        png_path = get_resource_path("icon.png")
+        # 使用统一的路径获取函数
+        ico_path = get_asset_path("icon.ico")
+        png_path = get_asset_path("icon.png")
         try:
             if sys.platform == "win32" and os.path.exists(ico_path):
                 self.root.iconbitmap(ico_path)
@@ -485,9 +494,9 @@ class SafeDraftApp:
 
     def minimize_to_tray(self):
         self.root.withdraw()
-        # --- 修复：使用绝对路径加载托盘图标 ---
-        ico_path = get_resource_path("icon.ico")
-        png_path = get_resource_path("icon.png")
+        # 使用统一的路径获取函数
+        ico_path = get_asset_path("icon.ico")
+        png_path = get_asset_path("icon.png")
         try:
             if os.path.exists(png_path):
                 image = Image.open(png_path)
