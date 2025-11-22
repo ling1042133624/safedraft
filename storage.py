@@ -1,6 +1,7 @@
 import sqlite3
 from datetime import datetime, timedelta
 
+# 默认触发器
 DEFAULT_TRIGGERS = [
     ("title", "ChatGPT", 1),
     ("title", "Claude", 1),
@@ -41,7 +42,7 @@ class StorageManager:
             )
         ''')
 
-        # 3. 通用设置表 (新增)
+        # 3. 设置表
         self.cursor.execute('''
             CREATE TABLE IF NOT EXISTS settings (
                 key TEXT PRIMARY KEY,
@@ -49,18 +50,15 @@ class StorageManager:
             )
         ''')
 
-        # 初始化触发器
         self.cursor.execute('SELECT count(*) FROM triggers_v2')
         if self.cursor.fetchone()[0] == 0:
             self.cursor.executemany('INSERT OR IGNORE INTO triggers_v2 (rule_type, value, enabled) VALUES (?, ?, ?)',
                                     DEFAULT_TRIGGERS)
 
-        # 初始化默认主题
         self.cursor.execute('INSERT OR IGNORE INTO settings (key, value) VALUES (?, ?)', ("theme", "Deep"))
-
         self.conn.commit()
 
-    # --- 通用配置读写 (新增) ---
+    # --- 设置读写 ---
     def get_setting(self, key, default=None):
         self.cursor.execute('SELECT value FROM settings WHERE key = ?', (key,))
         row = self.cursor.fetchone()
@@ -70,11 +68,14 @@ class StorageManager:
         self.cursor.execute('REPLACE INTO settings (key, value) VALUES (?, ?)', (key, value))
         self.conn.commit()
 
-    # --- 草稿保存逻辑 ---
+    # --- 核心：保存逻辑 ---
+
     def save_content(self, content):
+        """自动保存：更新当前会话或新建"""
         if not content.strip(): return
         now = datetime.now()
         should_create_new = False
+
         if self.current_session_id is None:
             self.cursor.execute('SELECT id, last_updated_at FROM drafts ORDER BY id DESC LIMIT 1')
             row = self.cursor.fetchone()
@@ -103,6 +104,20 @@ class StorageManager:
         self.conn.commit()
 
     def save_content_forced(self, content):
+        """手动保存并清空：强制新建，并更新 session_id（虽然外部会重置它）"""
+        if not content.strip(): return
+        now = datetime.now()
+        self.cursor.execute('INSERT INTO drafts (content, created_at, last_updated_at) VALUES (?, ?, ?)',
+                            (content, now.isoformat(), now.isoformat()))
+        self.current_session_id = self.cursor.lastrowid
+        self.conn.commit()
+
+    def save_snapshot(self, content):
+        """
+        【新增】Ctrl+S 快照保存：
+        只插入一条新记录，但【不】更新 self.current_session_id。
+        这样后续的打字依然会更新旧的记录（或者根据时间新建），从而实现“与正在输入的记录分离”。
+        """
         if not content.strip(): return
         now = datetime.now()
         self.cursor.execute('INSERT INTO drafts (content, created_at, last_updated_at) VALUES (?, ?, ?)',
@@ -118,7 +133,7 @@ class StorageManager:
         rows = self.cursor.fetchall()
         return rows
 
-    # --- 触发器管理 ---
+    # --- 触发器 ---
     def get_all_triggers(self):
         self.cursor.execute('SELECT id, rule_type, value, enabled FROM triggers_v2 ORDER BY rule_type, value')
         return self.cursor.fetchall()

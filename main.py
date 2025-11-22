@@ -3,16 +3,17 @@ from tkinter import ttk, messagebox, simpledialog, filedialog
 from datetime import datetime
 import os
 import sys
-import winreg
 import threading
 import keyboard
 import pystray
 from PIL import Image
 from storage import StorageManager
 from watcher import WindowWatcher
-# 把 import winreg 改成：
+
+# 导入 winreg (仅 Windows)
 if sys.platform == "win32":
     import winreg
+
 # --- 主题定义 ---
 THEMES = {
     "Deep": {
@@ -46,7 +47,6 @@ class StartupManager:
     # Windows 配置
     WIN_KEY_PATH = r"Software\Microsoft\Windows\CurrentVersion\Run"
     APP_NAME = "SafeDraft"
-
     # Mac 配置
     MAC_PLIST_NAME = "com.safedraft.autostart.plist"
 
@@ -83,37 +83,8 @@ class StartupManager:
                 key.Close()
             except Exception as e:
                 messagebox.showerror("错误", f"修改注册表失败: {e}")
-
         elif sys.platform == "darwin":
-            plist_path = StartupManager._get_mac_plist_path()
-            if enable:
-                # 创建 .plist 文件
-                app_path = sys.executable  # 打包后指向 .app 内的可执行文件
-                # 如果是开发环境，需要指向 python
-
-                plist_content = f"""<?xml version="1.0" encoding="UTF-8"?>
-<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
-<plist version="1.0">
-<dict>
-    <key>Label</key>
-    <string>com.safedraft.autostart</string>
-    <key>ProgramArguments</key>
-    <array>
-        <string>{app_path}</string>
-    </array>
-    <key>RunAtLoad</key>
-    <true/>
-</dict>
-</plist>
-"""
-                try:
-                    with open(plist_path, "w") as f:
-                        f.write(plist_content)
-                except Exception as e:
-                    messagebox.showerror("错误", f"写入启动项失败: {e}")
-            else:
-                if os.path.exists(plist_path):
-                    os.remove(plist_path)
+            pass
 
 
 class HistoryWindow(tk.Toplevel):
@@ -132,7 +103,7 @@ class HistoryWindow(tk.Toplevel):
 
     def load_icon(self):
         try:
-            if os.path.exists("icon.ico"):
+            if sys.platform == "win32" and os.path.exists("icon.ico"):
                 self.iconbitmap("icon.ico")
             elif os.path.exists("icon.png"):
                 img = tk.PhotoImage(file="icon.png")
@@ -229,7 +200,7 @@ class SettingsDialog(tk.Toplevel):
 
     def load_icon(self):
         try:
-            if os.path.exists("icon.ico"):
+            if sys.platform == "win32" and os.path.exists("icon.ico"):
                 self.iconbitmap("icon.ico")
             elif os.path.exists("icon.png"):
                 img = tk.PhotoImage(file="icon.png")
@@ -241,7 +212,6 @@ class SettingsDialog(tk.Toplevel):
         # Hotkey Hint
         frame_hotkey = tk.Frame(self.page_general, bg=self.colors["bg"], pady=10)
         frame_hotkey.pack(fill="x", padx=20)
-        # 更新文案
         tk.Label(frame_hotkey, text="全局快捷键: Ctrl + ~ (Backtick)",
                  bg=self.colors["bg"], fg="#4a90e2", font=("Arial", 10, "bold")).pack(anchor="w")
 
@@ -267,17 +237,28 @@ class SettingsDialog(tk.Toplevel):
         self.combo_theme.pack(side="left", padx=10)
         self.combo_theme.bind("<<ComboboxSelected>>", self.change_theme)
 
-        # --- Exit Preference (新增设置项) ---
+        # --- Transparency (新增透明度设置) ---
+        frame_alpha = tk.Frame(self.page_general, bg=self.colors["bg"], pady=10)
+        frame_alpha.pack(fill="x", padx=20)
+        tk.Label(frame_alpha, text="窗口透明度:", bg=self.colors["bg"], fg=self.colors["fg"]).pack(side="left")
+
+        current_alpha = float(self.db.get_setting("window_alpha", "0.95"))
+        # 创建滑动条
+        self.scale_alpha = tk.Scale(frame_alpha, from_=0.2, to=1.0, resolution=0.05, orient="horizontal",
+                                    bg=self.colors["bg"], fg=self.colors["fg"], highlightthickness=0,
+                                    activebackground=self.colors["accent"], bd=0, length=200,
+                                    command=self.on_alpha_change)
+        self.scale_alpha.set(current_alpha)
+        self.scale_alpha.pack(side="left", padx=10)
+
+        # Exit Preference
         frame_exit = tk.Frame(self.page_general, bg=self.colors["bg"], pady=20)
         frame_exit.pack(fill="x", padx=20)
         tk.Label(frame_exit, text="关闭主窗口时:", bg=self.colors["bg"], fg=self.colors["fg"]).pack(side="left")
-
-        current_exit = self.db.get_setting("exit_action", "ask")  # 默认为 ask
+        current_exit = self.db.get_setting("exit_action", "ask")
         self.combo_exit = ttk.Combobox(frame_exit, values=["ask", "tray", "quit"], state="readonly", width=10)
-        # 映射显示文本
         self.exit_map = {"ask": "每次询问", "tray": "最小化到托盘", "quit": "退出程序"}
         self.exit_map_rev = {v: k for k, v in self.exit_map.items()}
-
         self.combo_exit.set(self.exit_map.get(current_exit, "每次询问"))
         self.combo_exit.pack(side="left", padx=10)
         self.combo_exit.bind("<<ComboboxSelected>>", self.change_exit_pref)
@@ -292,8 +273,12 @@ class SettingsDialog(tk.Toplevel):
         self.colors = self.app.colors
         self.configure(bg=self.colors["bg"])
 
+    def on_alpha_change(self, value):
+        """滑动条拖动时实时更新"""
+        self.db.set_setting("window_alpha", value)
+        self.app.set_window_alpha(value)
+
     def change_exit_pref(self, event):
-        """用户手动在设置里修改退出习惯"""
         display_val = self.combo_exit.get()
         db_val = self.exit_map_rev.get(display_val, "ask")
         self.db.set_setting("exit_action", db_val)
@@ -379,9 +364,7 @@ class SafeDraftApp:
         self.watcher = WindowWatcher(self.db, self.on_trigger_detected)
         self.watcher.start()
 
-        # --- 更新热键为 Ctrl + ~ (Backtick) ---
         try:
-            # 'ctrl+`' 代表 Ctrl + 反引号键 (键盘左上角 ESC 下面那个)
             keyboard.add_hotkey('ctrl+`', self.on_global_hotkey)
         except Exception as e:
             print(f"Hotkey register failed: {e}")
@@ -397,15 +380,14 @@ class SafeDraftApp:
     def setup_window(self):
         self.root.title("SafeDraft")
         self.root.geometry("500x400+100+100")
-        self.root.attributes("-alpha", 0.95)
+
+        # 读取透明度设置
+        alpha = float(self.db.get_setting("window_alpha", "0.95"))
+        self.root.attributes("-alpha", alpha)
 
         try:
             if sys.platform == "win32" and os.path.exists("icon.ico"):
                 self.root.iconbitmap("icon.ico")
-            elif sys.platform == "darwin" and os.path.exists("icon.icns"):
-                # Mac 通常由打包工具处理图标，但 Tkinter 也可以尝试
-                # self.root.iconbitmap("icon.icns") # Tkinter 在 Mac 上对 iconbitmap 支持不好，通常跳过
-                pass
             elif os.path.exists("icon.png"):
                 img = tk.PhotoImage(file="icon.png")
                 self.root.iconphoto(True, img)
@@ -461,36 +443,34 @@ class SafeDraftApp:
         self.colors = THEMES.get(theme_name, THEMES["Deep"])
         self.apply_theme()
 
+    def set_window_alpha(self, value):
+        """设置窗口透明度 (供设置窗口调用)"""
+        try:
+            self.root.attributes("-alpha", float(value))
+        except:
+            pass
+
     def setup_events(self):
         self.text_area.bind("<KeyRelease>", self.on_key_release)
+        self.text_area.bind("<Control-s>", self.on_ctrl_s)
         self.root.protocol("WM_DELETE_WINDOW", self.on_close)
 
-    # --- 核心：智能退出逻辑 ---
     def on_close(self):
-        """
-        关闭窗口时的逻辑：
-        1. 检查是否已记录用户习惯。
-        2. 如果有，直接执行。
-        3. 如果无，询问并记录。
-        """
         exit_action = self.db.get_setting("exit_action", "ask")
-
         if exit_action == "tray":
             self.minimize_to_tray()
         elif exit_action == "quit":
             self.quit_app()
         else:
-            # ask 模式
             res = messagebox.askyesnocancel(
                 "退出确认",
                 "是否要保持后台运行？\n\n【是】最小化到系统托盘 (推荐)\n【否】彻底退出程序\n【取消】手滑了"
             )
-
             if res is True:
-                self.db.set_setting("exit_action", "tray")  # 记住选择
+                self.db.set_setting("exit_action", "tray")
                 self.minimize_to_tray()
             elif res is False:
-                self.db.set_setting("exit_action", "quit")  # 记住选择
+                self.db.set_setting("exit_action", "quit")
                 self.quit_app()
 
     def minimize_to_tray(self):
@@ -540,6 +520,13 @@ class SafeDraftApp:
     def on_key_release(self, event):
         content = self.text_area.get("1.0", "end-1c")
         self.db.save_content(content)
+
+    def on_ctrl_s(self, event):
+        content = self.text_area.get("1.0", "end-1c")
+        if content.strip():
+            self.db.save_snapshot(content)
+            self._flash_btn(self.btn_save, "快照已存 ✔", self.colors["btn_save_success"])
+        return "break"
 
     def manual_save(self):
         content = self.text_area.get("1.0", "end-1c")
