@@ -1,4 +1,6 @@
 import sqlite3
+import os
+import sys
 from datetime import datetime, timedelta
 
 # 默认触发器
@@ -15,7 +17,19 @@ DEFAULT_TRIGGERS = [
 
 class StorageManager:
     def __init__(self, db_name="safedraft.db"):
-        self.conn = sqlite3.connect(db_name, check_same_thread=False)
+        # --- 核心修复：获取绝对路径 ---
+        if getattr(sys, 'frozen', False):
+            # 如果是打包后的 .exe 运行
+            base_path = os.path.dirname(sys.executable)
+        else:
+            # 如果是 .py 脚本运行
+            base_path = os.path.dirname(os.path.abspath(__file__))
+
+        # 拼接出数据库的绝对路径
+        self.db_path = os.path.join(base_path, db_name)
+        # ---------------------------
+
+        self.conn = sqlite3.connect(self.db_path, check_same_thread=False)
         self.cursor = self.conn.cursor()
         self._init_db()
         self.current_session_id = None
@@ -104,7 +118,7 @@ class StorageManager:
         self.conn.commit()
 
     def save_content_forced(self, content):
-        """手动保存并清空：强制新建，并更新 session_id（虽然外部会重置它）"""
+        """手动保存并清空"""
         if not content.strip(): return
         now = datetime.now()
         self.cursor.execute('INSERT INTO drafts (content, created_at, last_updated_at) VALUES (?, ?, ?)',
@@ -113,11 +127,7 @@ class StorageManager:
         self.conn.commit()
 
     def save_snapshot(self, content):
-        """
-        【新增】Ctrl+S 快照保存：
-        只插入一条新记录，但【不】更新 self.current_session_id。
-        这样后续的打字依然会更新旧的记录（或者根据时间新建），从而实现“与正在输入的记录分离”。
-        """
+        """Ctrl+S 快照保存"""
         if not content.strip(): return
         now = datetime.now()
         self.cursor.execute('INSERT INTO drafts (content, created_at, last_updated_at) VALUES (?, ?, ?)',

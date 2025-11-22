@@ -10,9 +10,21 @@ from PIL import Image
 from storage import StorageManager
 from watcher import WindowWatcher
 
-# 导入 winreg (仅 Windows)
 if sys.platform == "win32":
     import winreg
+
+
+# --- 核心修复：获取资源绝对路径 ---
+def get_resource_path(relative_path):
+    """获取文件的绝对路径，兼容开发环境和打包后的 EXE"""
+    if getattr(sys, 'frozen', False):
+        base_path = os.path.dirname(sys.executable)
+    else:
+        base_path = os.path.dirname(os.path.abspath(__file__))
+    return os.path.join(base_path, relative_path)
+
+
+# --------------------------------
 
 # --- 主题定义 ---
 THEMES = {
@@ -44,10 +56,8 @@ THEMES = {
 
 
 class StartupManager:
-    # Windows 配置
     WIN_KEY_PATH = r"Software\Microsoft\Windows\CurrentVersion\Run"
     APP_NAME = "SafeDraft"
-    # Mac 配置
     MAC_PLIST_NAME = "com.safedraft.autostart.plist"
 
     @staticmethod
@@ -102,11 +112,14 @@ class HistoryWindow(tk.Toplevel):
         self.load_icon()
 
     def load_icon(self):
+        # --- 修复：使用绝对路径加载图标 ---
+        ico_path = get_resource_path("icon.ico")
+        png_path = get_resource_path("icon.png")
         try:
-            if sys.platform == "win32" and os.path.exists("icon.ico"):
-                self.iconbitmap("icon.ico")
-            elif os.path.exists("icon.png"):
-                img = tk.PhotoImage(file="icon.png")
+            if sys.platform == "win32" and os.path.exists(ico_path):
+                self.iconbitmap(ico_path)
+            elif os.path.exists(png_path):
+                img = tk.PhotoImage(file=png_path)
                 self.iconphoto(True, img)
         except:
             pass
@@ -199,23 +212,24 @@ class SettingsDialog(tk.Toplevel):
         self.setup_general_ui()
 
     def load_icon(self):
+        # --- 修复：使用绝对路径加载图标 ---
+        ico_path = get_resource_path("icon.ico")
+        png_path = get_resource_path("icon.png")
         try:
-            if sys.platform == "win32" and os.path.exists("icon.ico"):
-                self.iconbitmap("icon.ico")
-            elif os.path.exists("icon.png"):
-                img = tk.PhotoImage(file="icon.png")
+            if sys.platform == "win32" and os.path.exists(ico_path):
+                self.iconbitmap(ico_path)
+            elif os.path.exists(png_path):
+                img = tk.PhotoImage(file=png_path)
                 self.iconphoto(True, img)
         except:
             pass
 
     def setup_general_ui(self):
-        # Hotkey Hint
         frame_hotkey = tk.Frame(self.page_general, bg=self.colors["bg"], pady=10)
         frame_hotkey.pack(fill="x", padx=20)
         tk.Label(frame_hotkey, text="全局快捷键: Ctrl + ~ (Backtick)",
                  bg=self.colors["bg"], fg="#4a90e2", font=("Arial", 10, "bold")).pack(anchor="w")
 
-        # Boot
         frame_boot = tk.Frame(self.page_general, bg=self.colors["bg"], pady=10)
         frame_boot.pack(fill="x", padx=20)
         self.var_boot = tk.BooleanVar(value=StartupManager.is_autostart_enabled())
@@ -227,7 +241,6 @@ class SettingsDialog(tk.Toplevel):
         tk.Label(frame_boot, text="注意：受安全软件影响，可能需要允许注册表修改。",
                  bg=self.colors["bg"], fg="#888888", font=("Arial", 9)).pack(anchor="w", padx=20)
 
-        # Theme
         frame_theme = tk.Frame(self.page_general, bg=self.colors["bg"], pady=20)
         frame_theme.pack(fill="x", padx=20)
         tk.Label(frame_theme, text="界面主题:", bg=self.colors["bg"], fg=self.colors["fg"]).pack(side="left")
@@ -237,13 +250,11 @@ class SettingsDialog(tk.Toplevel):
         self.combo_theme.pack(side="left", padx=10)
         self.combo_theme.bind("<<ComboboxSelected>>", self.change_theme)
 
-        # --- Transparency (新增透明度设置) ---
         frame_alpha = tk.Frame(self.page_general, bg=self.colors["bg"], pady=10)
         frame_alpha.pack(fill="x", padx=20)
         tk.Label(frame_alpha, text="窗口透明度:", bg=self.colors["bg"], fg=self.colors["fg"]).pack(side="left")
 
         current_alpha = float(self.db.get_setting("window_alpha", "0.95"))
-        # 创建滑动条
         self.scale_alpha = tk.Scale(frame_alpha, from_=0.2, to=1.0, resolution=0.05, orient="horizontal",
                                     bg=self.colors["bg"], fg=self.colors["fg"], highlightthickness=0,
                                     activebackground=self.colors["accent"], bd=0, length=200,
@@ -251,7 +262,6 @@ class SettingsDialog(tk.Toplevel):
         self.scale_alpha.set(current_alpha)
         self.scale_alpha.pack(side="left", padx=10)
 
-        # Exit Preference
         frame_exit = tk.Frame(self.page_general, bg=self.colors["bg"], pady=20)
         frame_exit.pack(fill="x", padx=20)
         tk.Label(frame_exit, text="关闭主窗口时:", bg=self.colors["bg"], fg=self.colors["fg"]).pack(side="left")
@@ -274,7 +284,6 @@ class SettingsDialog(tk.Toplevel):
         self.configure(bg=self.colors["bg"])
 
     def on_alpha_change(self, value):
-        """滑动条拖动时实时更新"""
         self.db.set_setting("window_alpha", value)
         self.app.set_window_alpha(value)
 
@@ -381,15 +390,17 @@ class SafeDraftApp:
         self.root.title("SafeDraft")
         self.root.geometry("500x400+100+100")
 
-        # 读取透明度设置
         alpha = float(self.db.get_setting("window_alpha", "0.95"))
         self.root.attributes("-alpha", alpha)
 
+        # --- 修复：使用绝对路径加载图标 ---
+        ico_path = get_resource_path("icon.ico")
+        png_path = get_resource_path("icon.png")
         try:
-            if sys.platform == "win32" and os.path.exists("icon.ico"):
-                self.root.iconbitmap("icon.ico")
-            elif os.path.exists("icon.png"):
-                img = tk.PhotoImage(file="icon.png")
+            if sys.platform == "win32" and os.path.exists(ico_path):
+                self.root.iconbitmap(ico_path)
+            elif os.path.exists(png_path):
+                img = tk.PhotoImage(file=png_path)
                 self.root.iconphoto(True, img)
         except Exception as e:
             print(f"Icon load failed: {e}")
@@ -444,7 +455,6 @@ class SafeDraftApp:
         self.apply_theme()
 
     def set_window_alpha(self, value):
-        """设置窗口透明度 (供设置窗口调用)"""
         try:
             self.root.attributes("-alpha", float(value))
         except:
@@ -475,11 +485,14 @@ class SafeDraftApp:
 
     def minimize_to_tray(self):
         self.root.withdraw()
+        # --- 修复：使用绝对路径加载托盘图标 ---
+        ico_path = get_resource_path("icon.ico")
+        png_path = get_resource_path("icon.png")
         try:
-            if os.path.exists("icon.png"):
-                image = Image.open("icon.png")
-            elif os.path.exists("icon.ico"):
-                image = Image.open("icon.ico")
+            if os.path.exists(png_path):
+                image = Image.open(png_path)
+            elif os.path.exists(ico_path):
+                image = Image.open(ico_path)
             else:
                 image = Image.new('RGB', (64, 64), color=(74, 144, 226))
         except Exception:
