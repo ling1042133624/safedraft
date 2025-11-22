@@ -193,7 +193,7 @@ class SettingsDialog(tk.Toplevel):
         # Hotkey Hint
         frame_hotkey = tk.Frame(self.page_general, bg=self.colors["bg"], pady=10)
         frame_hotkey.pack(fill="x", padx=20)
-        tk.Label(frame_hotkey, text="全局快捷键: Ctrl + Alt + S (快速呼出)",
+        tk.Label(frame_hotkey, text="全局快捷键: ctrl+~(快速呼出)",
                  bg=self.colors["bg"], fg="#4a90e2", font=("Arial", 10, "bold")).pack(anchor="w")
 
         # Boot
@@ -311,7 +311,7 @@ class SafeDraftApp:
 
         # --- 注册全局热键 Ctrl+Alt+S ---
         try:
-            keyboard.add_hotkey('ctrl+alt+d', self.on_global_hotkey)
+            keyboard.add_hotkey('ctrl+~', self.on_global_hotkey)
         except Exception as e:
             print(f"Hotkey register failed: {e}")
 
