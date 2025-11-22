@@ -6,11 +6,13 @@ import sys
 import winreg
 import threading
 import keyboard
-import pystray  # --- 新增依赖: 系统托盘 ---
-from PIL import Image  # --- 新增依赖: 图片处理 ---
+import pystray
+from PIL import Image
 from storage import StorageManager
 from watcher import WindowWatcher
-
+# 把 import winreg 改成：
+if sys.platform == "win32":
+    import winreg
 # --- 主题定义 ---
 THEMES = {
     "Deep": {
@@ -41,34 +43,77 @@ THEMES = {
 
 
 class StartupManager:
-    KEY_PATH = r"Software\Microsoft\Windows\CurrentVersion\Run"
+    # Windows 配置
+    WIN_KEY_PATH = r"Software\Microsoft\Windows\CurrentVersion\Run"
     APP_NAME = "SafeDraft"
+
+    # Mac 配置
+    MAC_PLIST_NAME = "com.safedraft.autostart.plist"
+
+    @staticmethod
+    def _get_mac_plist_path():
+        return os.path.expanduser(f"~/Library/LaunchAgents/{StartupManager.MAC_PLIST_NAME}")
 
     @staticmethod
     def is_autostart_enabled():
-        try:
-            key = winreg.OpenKey(winreg.HKEY_CURRENT_USER, StartupManager.KEY_PATH, 0, winreg.KEY_READ)
-            winreg.QueryValueEx(key, StartupManager.APP_NAME)
-            key.Close()
-            return True
-        except FileNotFoundError:
-            return False
+        if sys.platform == "win32":
+            try:
+                key = winreg.OpenKey(winreg.HKEY_CURRENT_USER, StartupManager.WIN_KEY_PATH, 0, winreg.KEY_READ)
+                winreg.QueryValueEx(key, StartupManager.APP_NAME)
+                key.Close()
+                return True
+            except FileNotFoundError:
+                return False
+        elif sys.platform == "darwin":
+            return os.path.exists(StartupManager._get_mac_plist_path())
+        return False
 
     @staticmethod
     def set_autostart(enable):
-        try:
-            key = winreg.OpenKey(winreg.HKEY_CURRENT_USER, StartupManager.KEY_PATH, 0, winreg.KEY_ALL_ACCESS)
+        if sys.platform == "win32":
+            try:
+                key = winreg.OpenKey(winreg.HKEY_CURRENT_USER, StartupManager.WIN_KEY_PATH, 0, winreg.KEY_ALL_ACCESS)
+                if enable:
+                    winreg.SetValueEx(key, StartupManager.APP_NAME, 0, winreg.REG_SZ, sys.executable)
+                else:
+                    try:
+                        winreg.DeleteValue(key, StartupManager.APP_NAME)
+                    except FileNotFoundError:
+                        pass
+                key.Close()
+            except Exception as e:
+                messagebox.showerror("错误", f"修改注册表失败: {e}")
+
+        elif sys.platform == "darwin":
+            plist_path = StartupManager._get_mac_plist_path()
             if enable:
-                exe_path = sys.executable
-                winreg.SetValueEx(key, StartupManager.APP_NAME, 0, winreg.REG_SZ, exe_path)
-            else:
+                # 创建 .plist 文件
+                app_path = sys.executable  # 打包后指向 .app 内的可执行文件
+                # 如果是开发环境，需要指向 python
+
+                plist_content = f"""<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.safedraft.autostart</string>
+    <key>ProgramArguments</key>
+    <array>
+        <string>{app_path}</string>
+    </array>
+    <key>RunAtLoad</key>
+    <true/>
+</dict>
+</plist>
+"""
                 try:
-                    winreg.DeleteValue(key, StartupManager.APP_NAME)
-                except FileNotFoundError:
-                    pass
-            key.Close()
-        except Exception as e:
-            messagebox.showerror("错误", f"修改注册表失败: {e}")
+                    with open(plist_path, "w") as f:
+                        f.write(plist_content)
+                except Exception as e:
+                    messagebox.showerror("错误", f"写入启动项失败: {e}")
+            else:
+                if os.path.exists(plist_path):
+                    os.remove(plist_path)
 
 
 class HistoryWindow(tk.Toplevel):
@@ -196,7 +241,8 @@ class SettingsDialog(tk.Toplevel):
         # Hotkey Hint
         frame_hotkey = tk.Frame(self.page_general, bg=self.colors["bg"], pady=10)
         frame_hotkey.pack(fill="x", padx=20)
-        tk.Label(frame_hotkey, text="全局快捷键: Ctrl + Alt + S (快速呼出)",
+        # 更新文案
+        tk.Label(frame_hotkey, text="全局快捷键: Ctrl + ~ (Backtick)",
                  bg=self.colors["bg"], fg="#4a90e2", font=("Arial", 10, "bold")).pack(anchor="w")
 
         # Boot
@@ -221,6 +267,21 @@ class SettingsDialog(tk.Toplevel):
         self.combo_theme.pack(side="left", padx=10)
         self.combo_theme.bind("<<ComboboxSelected>>", self.change_theme)
 
+        # --- Exit Preference (新增设置项) ---
+        frame_exit = tk.Frame(self.page_general, bg=self.colors["bg"], pady=20)
+        frame_exit.pack(fill="x", padx=20)
+        tk.Label(frame_exit, text="关闭主窗口时:", bg=self.colors["bg"], fg=self.colors["fg"]).pack(side="left")
+
+        current_exit = self.db.get_setting("exit_action", "ask")  # 默认为 ask
+        self.combo_exit = ttk.Combobox(frame_exit, values=["ask", "tray", "quit"], state="readonly", width=10)
+        # 映射显示文本
+        self.exit_map = {"ask": "每次询问", "tray": "最小化到托盘", "quit": "退出程序"}
+        self.exit_map_rev = {v: k for k, v in self.exit_map.items()}
+
+        self.combo_exit.set(self.exit_map.get(current_exit, "每次询问"))
+        self.combo_exit.pack(side="left", padx=10)
+        self.combo_exit.bind("<<ComboboxSelected>>", self.change_exit_pref)
+
     def toggle_boot(self):
         StartupManager.set_autostart(self.var_boot.get())
 
@@ -230,6 +291,12 @@ class SettingsDialog(tk.Toplevel):
         self.app.switch_theme(theme_name)
         self.colors = self.app.colors
         self.configure(bg=self.colors["bg"])
+
+    def change_exit_pref(self, event):
+        """用户手动在设置里修改退出习惯"""
+        display_val = self.combo_exit.get()
+        db_val = self.exit_map_rev.get(display_val, "ask")
+        self.db.set_setting("exit_action", db_val)
 
     def setup_rules_ui(self):
         btn_frame = tk.Frame(self.page_rules, bg=self.colors["bg"], pady=5)
@@ -306,14 +373,16 @@ class SafeDraftApp:
 
         self.is_topmost = False
         self.topmost_timer = None
-        self.tray_icon = None  # 托盘图标对象
+        self.tray_icon = None
 
         self.db = StorageManager()
         self.watcher = WindowWatcher(self.db, self.on_trigger_detected)
         self.watcher.start()
 
+        # --- 更新热键为 Ctrl + ~ (Backtick) ---
         try:
-            keyboard.add_hotkey('ctrl+alt+s', self.on_global_hotkey)
+            # 'ctrl+`' 代表 Ctrl + 反引号键 (键盘左上角 ESC 下面那个)
+            keyboard.add_hotkey('ctrl+`', self.on_global_hotkey)
         except Exception as e:
             print(f"Hotkey register failed: {e}")
 
@@ -331,8 +400,12 @@ class SafeDraftApp:
         self.root.attributes("-alpha", 0.95)
 
         try:
-            if os.path.exists("icon.ico"):
+            if sys.platform == "win32" and os.path.exists("icon.ico"):
                 self.root.iconbitmap("icon.ico")
+            elif sys.platform == "darwin" and os.path.exists("icon.icns"):
+                # Mac 通常由打包工具处理图标，但 Tkinter 也可以尝试
+                # self.root.iconbitmap("icon.icns") # Tkinter 在 Mac 上对 iconbitmap 支持不好，通常跳过
+                pass
             elif os.path.exists("icon.png"):
                 img = tk.PhotoImage(file="icon.png")
                 self.root.iconphoto(True, img)
@@ -390,41 +463,48 @@ class SafeDraftApp:
 
     def setup_events(self):
         self.text_area.bind("<KeyRelease>", self.on_key_release)
-        # 拦截关闭窗口事件
         self.root.protocol("WM_DELETE_WINDOW", self.on_close)
 
-    # --- 核心：托盘与退出逻辑 ---
+    # --- 核心：智能退出逻辑 ---
     def on_close(self):
-        """用户点击关闭时的确认逻辑"""
-        # askyesnocancel 返回值: True(是), False(否), None(取消)
-        res = messagebox.askyesnocancel(
-            "退出确认",
-            "是否要保持后台运行？\n\n【是】最小化到系统托盘 (推荐)\n【否】彻底退出程序\n【取消】手滑了"
-        )
+        """
+        关闭窗口时的逻辑：
+        1. 检查是否已记录用户习惯。
+        2. 如果有，直接执行。
+        3. 如果无，询问并记录。
+        """
+        exit_action = self.db.get_setting("exit_action", "ask")
 
-        if res is True:
+        if exit_action == "tray":
             self.minimize_to_tray()
-        elif res is False:
+        elif exit_action == "quit":
             self.quit_app()
-        # None: 什么都不做
+        else:
+            # ask 模式
+            res = messagebox.askyesnocancel(
+                "退出确认",
+                "是否要保持后台运行？\n\n【是】最小化到系统托盘 (推荐)\n【否】彻底退出程序\n【取消】手滑了"
+            )
+
+            if res is True:
+                self.db.set_setting("exit_action", "tray")  # 记住选择
+                self.minimize_to_tray()
+            elif res is False:
+                self.db.set_setting("exit_action", "quit")  # 记住选择
+                self.quit_app()
 
     def minimize_to_tray(self):
-        """最小化到系统托盘"""
-        self.root.withdraw()  # 隐藏主窗口
-
-        # 加载托盘图标 (pystray 需要 PIL Image 对象)
+        self.root.withdraw()
         try:
             if os.path.exists("icon.png"):
                 image = Image.open("icon.png")
             elif os.path.exists("icon.ico"):
                 image = Image.open("icon.ico")
             else:
-                # 如果没有图标，生成一个简单的色块
                 image = Image.new('RGB', (64, 64), color=(74, 144, 226))
         except Exception:
             image = Image.new('RGB', (64, 64), color=(74, 144, 226))
 
-        # 定义托盘菜单
         def on_tray_quit(icon, item):
             icon.stop()
             self.root.after(0, self.quit_app)
@@ -439,24 +519,17 @@ class SafeDraftApp:
         )
 
         self.tray_icon = pystray.Icon("SafeDraft", image, "SafeDraft", menu)
-
-        # 在独立线程运行托盘，防止阻塞 Tkinter 主循环
-        # 注意：Tkinter 隐藏后，mainloop 仍在运行处理其他事件(如 keyboard)
         threading.Thread(target=self.tray_icon.run, daemon=True).start()
 
     def restore_from_tray(self):
-        """从托盘恢复"""
         if self.tray_icon:
-            # 停止托盘图标线程（图标会消失）
             self.tray_icon.stop()
             self.tray_icon = None
-
         self.root.deiconify()
         self.root.lift()
         self.root.focus_force()
 
     def quit_app(self):
-        """彻底退出"""
         if self.tray_icon:
             self.tray_icon.stop()
         self.watcher.stop()
@@ -464,7 +537,6 @@ class SafeDraftApp:
         self.root.destroy()
         os._exit(0)
 
-    # --- 其他功能 ---
     def on_key_release(self, event):
         content = self.text_area.get("1.0", "end-1c")
         self.db.save_content(content)
@@ -503,7 +575,6 @@ class SafeDraftApp:
         self.root.after(0, self._perform_auto_pop_force)
 
     def _perform_auto_pop_force(self):
-        # 强制恢复（如果最小化到了托盘，也要恢复）
         self.restore_from_tray()
         self._start_auto_topmost()
 
@@ -512,13 +583,10 @@ class SafeDraftApp:
 
     def _perform_auto_pop(self):
         if self.is_topmost and not self.topmost_timer: return
-
-        # 如果在托盘里，恢复它
         if self.root.state() == 'withdrawn':
             self.restore_from_tray()
         elif self.root.state() == 'iconic':
             self.root.deiconify()
-
         if self.root.focus_displayof() is None:
             self.root.geometry("+100+100")
         self._start_auto_topmost()

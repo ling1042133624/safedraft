@@ -36,3 +36,47 @@ pip install -r requirements.txt
 ```bash
 python -m nuitka --standalone --onefile --windows-disable-console --enable-plugin=tk-inter --output-filename=SafeDraft.exe main.py
 ```
+
+
+### macOS打包 (在 macOS 上操作)
+
+**注意：你必须有一台 Mac 电脑才能打包 Mac 应用。** 你不能在 Windows 上生成 Mac 的 `.app`。
+
+1.  **准备图标**：
+
+      * 将你的 `icon.png` 转换为 `icon.icns` (Mac 图标格式)。你可以使用在线工具转换。
+
+2.  **安装依赖 (在 Mac 终端中)**：
+
+    ```bash
+    pip install -r requirements.txt
+    pip install nuitka
+    ```
+
+3.  **运行 Nuitka 打包命令**：
+    Nuitka 在 Mac 上有一个专门的参数 `--macos-create-app-bundle` 用来生成 `.app` 文件夹。
+
+    ```bash
+    python -m nuitka --standalone --onefile --enable-plugin=tk-inter --macos-create-app-bundle --macos-app-icon=icon.icns --output-filename=SafeDraft main.py
+    ```
+
+      * `--macos-create-app-bundle`: 告诉 Nuitka 生成 Mac 应用包结构。
+      * `--macos-app-icon=icon.icns`: 指定应用图标。
+
+### 重要提示：Mac 权限问题
+
+MacOS 的安全机制（SIP 和 辅助功能权限）比 Windows 严格得多：
+
+1.  **键盘监听 (keyboard)**：`keyboard` 库在 Mac 上监听全局按键通常需要 **sudo (root)** 权限，或者在“系统设置 -\> 隐私与安全性 -\> 辅助功能”中授权给终端或你的 App。如果不想用 root 运行，你的快捷键功能可能会失效。
+2.  **窗口标题获取**：获取其他 App 的窗口标题可能需要“屏幕录制”权限。我在上面的 `watcher.py` 代码中做了降级处理（只获取 App 名字），这样可以避免复杂的权限申请。
+
+**建议**：
+如果打包遇到困难，在 Mac 上使用 `py2app` 或 `PyInstaller` 也是非常主流的选择：
+
+```bash
+# PyInstaller 方案
+pip install pyinstaller
+pyinstaller --name "SafeDraft" --windowed --icon=icon.icns --onefile main.py
+```
+
+生成的应用会在 `dist/SafeDraft.app`。

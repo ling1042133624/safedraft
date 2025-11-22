@@ -1,10 +1,17 @@
-# 核心依赖
-pywin32>=306
+# 通用
 psutil>=5.9.0
 keyboard>=0.13.5
-# 打包工具 (Nuitka)
-nuitka>=2.0
-ordered-set
-zstandard
 pystray>=0.19.5
 Pillow>=10.0.0
+ordered-set
+zstandard
+
+# Windows 专用
+pywin32>=306; sys_platform == 'win32'
+
+# Mac 专用
+pyobjc-framework-Quartz; sys_platform == 'darwin'
+pyobjc-framework-Cocoa; sys_platform == 'darwin'
+
+# 打包
+nuitka>=2.0

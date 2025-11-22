@@ -1,8 +1,17 @@
 import time
 import threading
-import win32gui
-import win32process
+import sys
 import psutil
+
+# 根据平台导入特定库
+if sys.platform == "win32":
+    import win32gui
+    import win32process
+elif sys.platform == "darwin":
+    from Cocoa import NSWorkspace
+    from Quartz import (
+        CGWindowListCopyWindowInfo, kCGWindowListOptionOnScreenOnly, kCGNullWindowID
+    )
 
 
 class WindowWatcher:
@@ -10,10 +19,8 @@ class WindowWatcher:
         self.db_manager = db_manager
         self.callback = callback
         self.running = False
-        self.last_hwnd = None
+        self.last_active_window_name = None
         self.lock = threading.Lock()
-
-        # 初始加载规则
         self.reload_rules()
 
     def start(self):
@@ -24,57 +31,85 @@ class WindowWatcher:
         self.running = False
 
     def reload_rules(self):
-        """从数据库重新加载规则"""
         with self.lock:
             rules = self.db_manager.get_enabled_rules()
-            self.title_keywords = rules['title']  # List of strings
-            self.process_names = rules['process']  # List of strings (e.g., 'winword.exe')
-            # print(f"Watcher rules reloaded: {len(self.title_keywords)} titles, {len(self.process_names)} processes")
+            self.title_keywords = rules['title']
+            self.process_names = rules['process']
 
-    def _get_process_name(self, hwnd):
-        """通过窗口句柄获取进程名 (如 winword.exe)"""
+    def _get_active_window_info_win(self):
+        """Windows 获取前台窗口信息"""
         try:
+            hwnd = win32gui.GetForegroundWindow()
+            title = win32gui.GetWindowText(hwnd).lower()
             _, pid = win32process.GetWindowThreadProcessId(hwnd)
-            if pid > 0:
-                proc = psutil.Process(pid)
-                return proc.name().lower()
-        except Exception:
-            return ""
-        return ""
+            proc_name = psutil.Process(pid).name().lower() if pid > 0 else ""
+            return title, proc_name
+        except:
+            return "", ""
+
+    def _get_active_window_info_mac(self):
+        """Mac 获取前台窗口信息"""
+        try:
+            # 1. 获取前台 App 名称 (Process Name)
+            active_app = NSWorkspace.sharedWorkspace().frontmostApplication()
+            if not active_app: return "", ""
+
+            proc_name = active_app.localizedName().lower()
+
+            # 2. 获取窗口标题 (需要屏幕录制权限，否则可能获取不到或只能获取应用名)
+            # 这里做一个简单的近似，只监控 App 名字，更深度的窗口标题需要 Accessibility API 比较复杂
+            # 简单实现：Mac下主要依靠 App 名称监控
+            title = proc_name  # 默认标题等于应用名
+
+            # 尝试通过 Quartz 获取所有窗口信息找到前台应用的窗口 (可选，性能开销较大)
+            # options = kCGWindowListOptionOnScreenOnly
+            # window_list = CGWindowListCopyWindowInfo(options, kCGNullWindowID)
+            # for window in window_list:
+            #     if window['kCGWindowOwnerPID'] == active_app.processIdentifier():
+            #         title = window.get('kCGWindowName', '').lower()
+            #         break
+
+            return title, proc_name + ".app"  # 模拟 .exe 格式方便统一处理
+        except:
+            return "", ""
 
     def _loop(self):
         while self.running:
             try:
-                hwnd = win32gui.GetForegroundWindow()
-                # 只有当窗口句柄变化时才检测
-                if hwnd != self.last_hwnd:
-                    self.last_hwnd = hwnd
+                if sys.platform == "win32":
+                    title, proc_name = self._get_active_window_info_win()
+                elif sys.platform == "darwin":
+                    title, proc_name = self._get_active_window_info_mac()
+                else:
+                    time.sleep(1)
+                    continue
 
-                    # 1. 获取信息
-                    window_title = win32gui.GetWindowText(hwnd).lower()
-                    process_name = self._get_process_name(hwnd)
+                # 简单的去重逻辑，防止同一窗口重复触发
+                current_id = f"{proc_name}|{title}"
+                if current_id != self.last_active_window_name:
+                    self.last_active_window_name = current_id
 
                     matched = False
-
                     with self.lock:
-                        # 2. 优先检测：进程名匹配 (精确且高效)
-                        if process_name in self.process_names:
-                            matched = True
-                            # print(f"Triggered by Process: {process_name}")
+                        # 1. 检查进程名 (Mac下如 "Code.app", "Google Chrome.app")
+                        # 这里的对比需要注意，Mac的应用名通常没有 .exe，我们在上面强行加了 .app 或者你可以只匹配名字
+                        for p_rule in self.process_names:
+                            # 模糊匹配，例如规则是 "word"，实际是 "microsoft word.app"
+                            if p_rule.replace(".exe", "") in proc_name:
+                                matched = True
+                                break
 
-                        # 3. 其次检测：标题关键词 (用于浏览器网页)
+                        # 2. 检查标题
                         if not matched:
-                            for kw in self.title_keywords:
-                                if kw in window_title:
+                            for t_rule in self.title_keywords:
+                                if t_rule in title:
                                     matched = True
-                                    # print(f"Triggered by Title: {kw}")
                                     break
 
                     if matched:
                         self.callback()
 
             except Exception as e:
-                # print(f"Watcher error: {e}")
-                pass
+                print(f"Watcher error: {e}")
 
-            time.sleep(1)  # 1秒检测一次，省电
+            time.sleep(1)
