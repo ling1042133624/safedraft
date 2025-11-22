@@ -6,7 +6,7 @@ import sys
 import threading
 import keyboard
 import pystray
-from PIL import Image
+from PIL import Image, ImageTk
 from storage import StorageManager
 from watcher import WindowWatcher
 
@@ -15,49 +15,64 @@ if sys.platform == "win32":
 
 
 # ---------------------------------------------------------
-# 核心路径修复：与 storage.py 保持完全一致的逻辑
+# 1. 终极路径获取逻辑 (穷举法)
 # ---------------------------------------------------------
 def get_asset_path(filename):
     """
-    获取资源文件的绝对路径。
-    优先使用 sys.argv[0] (EXE所在路径)，确保与数据库路径一致。
+    尝试在所有可能的目录下寻找文件。
+    返回找到的第一个存在的绝对路径，如果都没找到，返回当前目录下的路径。
     """
+    search_dirs = []
+
+    # 1. 当前工作目录 (双击 exe 时通常就是这里)
+    search_dirs.append(os.getcwd())
+
+    # 2. EXE 所在的物理目录 (sys.argv[0])
     if getattr(sys, 'frozen', False):
-        # 打包后的 EXE 环境
-        base_path = os.path.dirname(os.path.abspath(sys.argv[0]))
+        search_dirs.append(os.path.dirname(os.path.abspath(sys.argv[0])))
     else:
-        # 开发环境
-        base_path = os.path.dirname(os.path.abspath(__file__))
-    return os.path.join(base_path, filename)
+        search_dirs.append(os.path.dirname(os.path.abspath(__file__)))
+
+    # 3. Nuitka/PyInstaller 的临时解压目录 (sys.executable)
+    if getattr(sys, 'frozen', False):
+        search_dirs.append(os.path.dirname(sys.executable))
+
+    # 开始寻找
+    for directory in search_dirs:
+        full_path = os.path.join(directory, filename)
+        if os.path.exists(full_path):
+            return full_path
+
+    # 如果都没找到，默认返回当前目录 (虽然不存在)
+    return os.path.join(os.getcwd(), filename)
 
 
 # ---------------------------------------------------------
+# 2. 调试日志 (强制写在当前目录下)
+# ---------------------------------------------------------
+def log_debug(message):
+    try:
+        # 强制写在当前工作目录，确保你能看到
+        log_path = os.path.join(os.getcwd(), "_safedraft_debug.txt")
+        with open(log_path, "a", encoding="utf-8") as f:
+            f.write(f"[{datetime.now()}] {message}\n")
+    except:
+        pass
+
 
 # --- 主题定义 ---
 THEMES = {
     "Deep": {
-        "bg": "#1e1e1e",
-        "fg": "#d4d4d4",
-        "accent": "#3c3c3c",
-        "list_bg": "#252526",
-        "list_fg": "#e0e0e0",
-        "text_bg": "#1e1e1e",
-        "text_fg": "#d4d4d4",
-        "insert_bg": "white",
-        "btn_top_active": "#d35400",
-        "btn_save_success": "#4caf50",
+        "bg": "#1e1e1e", "fg": "#d4d4d4", "accent": "#3c3c3c",
+        "list_bg": "#252526", "list_fg": "#e0e0e0",
+        "text_bg": "#1e1e1e", "text_fg": "#d4d4d4", "insert_bg": "white",
+        "btn_top_active": "#d35400", "btn_save_success": "#4caf50",
     },
     "Light": {
-        "bg": "#f0f0f0",
-        "fg": "#333333",
-        "accent": "#e0e0e0",
-        "list_bg": "#ffffff",
-        "list_fg": "#000000",
-        "text_bg": "#ffffff",
-        "text_fg": "#000000",
-        "insert_bg": "black",
-        "btn_top_active": "#e67e22",
-        "btn_save_success": "#27ae60",
+        "bg": "#f0f0f0", "fg": "#333333", "accent": "#e0e0e0",
+        "list_bg": "#ffffff", "list_fg": "#000000",
+        "text_bg": "#ffffff", "text_fg": "#000000", "insert_bg": "black",
+        "btn_top_active": "#e67e22", "btn_save_success": "#27ae60",
     }
 }
 
@@ -91,13 +106,13 @@ class StartupManager:
             try:
                 key = winreg.OpenKey(winreg.HKEY_CURRENT_USER, StartupManager.WIN_KEY_PATH, 0, winreg.KEY_ALL_ACCESS)
                 if enable:
-                    # 注意：这里也需要写入 sys.argv[0] 以确保开机启动的是那个 exe
+                    # 修复：开机自启也使用 sys.argv[0] 锁定物理 exe
                     exe_path = os.path.abspath(sys.argv[0])
                     winreg.SetValueEx(key, StartupManager.APP_NAME, 0, winreg.REG_SZ, exe_path)
                 else:
                     try:
                         winreg.DeleteValue(key, StartupManager.APP_NAME)
-                    except FileNotFoundError:
+                    except:
                         pass
                 key.Close()
             except Exception as e:
@@ -114,47 +129,39 @@ class HistoryWindow(tk.Toplevel):
         self.db = db
         self.restore_callback = restore_callback
         self.colors = theme
-
         self.configure(bg=self.colors["bg"])
         self.setup_ui()
         self.refresh_data()
         self.load_icon()
 
     def load_icon(self):
-        # 使用统一的路径获取函数
         ico_path = get_asset_path("icon.ico")
         png_path = get_asset_path("icon.png")
         try:
             if sys.platform == "win32" and os.path.exists(ico_path):
                 self.iconbitmap(ico_path)
             elif os.path.exists(png_path):
-                img = tk.PhotoImage(file=png_path)
-                self.iconphoto(True, img)
+                img = Image.open(png_path)
+                self.icon_img = ImageTk.PhotoImage(img)
+                self.iconphoto(True, self.icon_img)
         except:
             pass
 
     def setup_ui(self):
         lbl = tk.Label(self, text="双击记录可恢复 | 选中可删除", bg=self.colors["bg"], fg="#888888", pady=10)
         lbl.pack(side="top", fill="x")
-
         frame = tk.Frame(self, bg=self.colors["bg"])
         frame.pack(fill="both", expand=True, padx=10, pady=(0, 5))
-
         self.scrollbar = ttk.Scrollbar(frame, orient="vertical")
         self.listbox = tk.Listbox(frame, bg=self.colors["list_bg"], fg=self.colors["list_fg"],
-                                  relief="flat", highlightthickness=0,
-                                  selectbackground="#4a90e2",
-                                  yscrollcommand=self.scrollbar.set,
-                                  font=("Consolas", 10))
-
+                                  relief="flat", highlightthickness=0, selectbackground="#4a90e2",
+                                  yscrollcommand=self.scrollbar.set, font=("Consolas", 10))
         self.scrollbar.config(command=self.listbox.yview)
         self.scrollbar.pack(side="right", fill="y")
         self.listbox.pack(side="left", fill="both", expand=True)
         self.listbox.bind("<Double-Button-1>", self.on_double_click)
-
         btn_frame = tk.Frame(self, bg=self.colors["bg"], pady=10)
         btn_frame.pack(side="bottom", fill="x", padx=10)
-
         tk.Button(btn_frame, text="🗑️ 删除选中", command=self.on_delete,
                   bg=self.colors["bg"], fg="#ff5555", relief="flat",
                   activebackground=self.colors["accent"], activeforeground="#ff5555").pack(side="right")
@@ -201,35 +208,30 @@ class SettingsDialog(tk.Toplevel):
         self.watcher = watcher
         self.app = app
         self.colors = app.colors
-
         self.configure(bg=self.colors["bg"])
         self.load_icon()
-
         style = ttk.Style()
         style.configure("TNotebook", background=self.colors["bg"])
         style.configure("TNotebook.Tab", background=self.colors["accent"], foreground="black")
-
         self.notebook = ttk.Notebook(self)
         self.notebook.pack(fill="both", expand=True, padx=10, pady=10)
-
         self.page_rules = tk.Frame(self.notebook, bg=self.colors["bg"])
         self.notebook.add(self.page_rules, text=" 监控规则 ")
         self.setup_rules_ui()
-
         self.page_general = tk.Frame(self.notebook, bg=self.colors["bg"])
         self.notebook.add(self.page_general, text=" 常规设置 ")
         self.setup_general_ui()
 
     def load_icon(self):
-        # 使用统一的路径获取函数
         ico_path = get_asset_path("icon.ico")
         png_path = get_asset_path("icon.png")
         try:
             if sys.platform == "win32" and os.path.exists(ico_path):
                 self.iconbitmap(ico_path)
             elif os.path.exists(png_path):
-                img = tk.PhotoImage(file=png_path)
-                self.iconphoto(True, img)
+                img = Image.open(png_path)
+                self.icon_img = ImageTk.PhotoImage(img)
+                self.iconphoto(True, self.icon_img)
         except:
             pass
 
@@ -238,7 +240,6 @@ class SettingsDialog(tk.Toplevel):
         frame_hotkey.pack(fill="x", padx=20)
         tk.Label(frame_hotkey, text="全局快捷键: Ctrl + ~ (Backtick)",
                  bg=self.colors["bg"], fg="#4a90e2", font=("Arial", 10, "bold")).pack(anchor="w")
-
         frame_boot = tk.Frame(self.page_general, bg=self.colors["bg"], pady=10)
         frame_boot.pack(fill="x", padx=20)
         self.var_boot = tk.BooleanVar(value=StartupManager.is_autostart_enabled())
@@ -249,7 +250,6 @@ class SettingsDialog(tk.Toplevel):
         chk_boot.pack(anchor="w")
         tk.Label(frame_boot, text="注意：受安全软件影响，可能需要允许注册表修改。",
                  bg=self.colors["bg"], fg="#888888", font=("Arial", 9)).pack(anchor="w", padx=20)
-
         frame_theme = tk.Frame(self.page_general, bg=self.colors["bg"], pady=20)
         frame_theme.pack(fill="x", padx=20)
         tk.Label(frame_theme, text="界面主题:", bg=self.colors["bg"], fg=self.colors["fg"]).pack(side="left")
@@ -258,11 +258,9 @@ class SettingsDialog(tk.Toplevel):
         self.combo_theme.set(current_theme)
         self.combo_theme.pack(side="left", padx=10)
         self.combo_theme.bind("<<ComboboxSelected>>", self.change_theme)
-
         frame_alpha = tk.Frame(self.page_general, bg=self.colors["bg"], pady=10)
         frame_alpha.pack(fill="x", padx=20)
         tk.Label(frame_alpha, text="窗口透明度:", bg=self.colors["bg"], fg=self.colors["fg"]).pack(side="left")
-
         current_alpha = float(self.db.get_setting("window_alpha", "0.95"))
         self.scale_alpha = tk.Scale(frame_alpha, from_=0.2, to=1.0, resolution=0.05, orient="horizontal",
                                     bg=self.colors["bg"], fg=self.colors["fg"], highlightthickness=0,
@@ -270,7 +268,6 @@ class SettingsDialog(tk.Toplevel):
                                     command=self.on_alpha_change)
         self.scale_alpha.set(current_alpha)
         self.scale_alpha.pack(side="left", padx=10)
-
         frame_exit = tk.Frame(self.page_general, bg=self.colors["bg"], pady=20)
         frame_exit.pack(fill="x", padx=20)
         tk.Label(frame_exit, text="关闭主窗口时:", bg=self.colors["bg"], fg=self.colors["fg"]).pack(side="left")
@@ -304,24 +301,18 @@ class SettingsDialog(tk.Toplevel):
     def setup_rules_ui(self):
         btn_frame = tk.Frame(self.page_rules, bg=self.colors["bg"], pady=5)
         btn_frame.pack(fill="x", padx=0)
-
         tk.Button(btn_frame, text="➕ 选择应用 (.exe)", command=self.add_exe,
                   bg="#4a90e2", fg="white", relief="flat", padx=10).pack(side="left", padx=5)
-
         tk.Button(btn_frame, text="➕ 添加网址/标题", command=self.add_title_keyword,
                   bg=self.colors["accent"], fg=self.colors["fg"], relief="flat", padx=10).pack(side="left", padx=5)
-
         list_frame = tk.Frame(self.page_rules, bg=self.colors["bg"])
         list_frame.pack(fill="both", expand=True, padx=0, pady=10)
-
         self.canvas = tk.Canvas(list_frame, bg=self.colors["bg"], highlightthickness=0)
         self.scrollbar = ttk.Scrollbar(list_frame, orient="vertical", command=self.canvas.yview)
         self.scrollable_frame = tk.Frame(self.canvas, bg=self.colors["bg"])
-
         self.scrollable_frame.bind("<Configure>", lambda e: self.canvas.configure(scrollregion=self.canvas.bbox("all")))
         self.canvas.create_window((0, 0), window=self.scrollable_frame, anchor="nw")
         self.canvas.configure(yscrollcommand=self.scrollbar.set)
-
         self.canvas.pack(side="left", fill="both", expand=True)
         self.scrollbar.pack(side="right", fill="y")
         self.load_rules()
@@ -373,23 +364,18 @@ class SettingsDialog(tk.Toplevel):
 class SafeDraftApp:
     def __init__(self, root):
         self.root = root
-
         self.is_topmost = False
         self.topmost_timer = None
         self.tray_icon = None
-
         self.db = StorageManager()
         self.watcher = WindowWatcher(self.db, self.on_trigger_detected)
         self.watcher.start()
-
         try:
             keyboard.add_hotkey('ctrl+`', self.on_global_hotkey)
         except Exception as e:
             print(f"Hotkey register failed: {e}")
-
         theme_name = self.db.get_setting("theme", "Deep")
         self.colors = THEMES.get(theme_name, THEMES["Deep"])
-
         self.setup_window()
         self.setup_ui()
         self.setup_events()
@@ -398,42 +384,50 @@ class SafeDraftApp:
     def setup_window(self):
         self.root.title("SafeDraft")
         self.root.geometry("500x400+100+100")
-
         alpha = float(self.db.get_setting("window_alpha", "0.95"))
         self.root.attributes("-alpha", alpha)
 
-        # 使用统一的路径获取函数
+        # --- 终极加载逻辑 + 调试日志 ---
+        log_debug("Starting Icon Load...")
         ico_path = get_asset_path("icon.ico")
         png_path = get_asset_path("icon.png")
+        log_debug(f"Calculated ICO path: {ico_path}")
+        log_debug(f"Calculated PNG path: {png_path}")
+
         try:
             if sys.platform == "win32" and os.path.exists(ico_path):
+                log_debug("Found ICO, loading via iconbitmap")
                 self.root.iconbitmap(ico_path)
             elif os.path.exists(png_path):
-                img = tk.PhotoImage(file=png_path)
-                self.root.iconphoto(True, img)
+                log_debug("Found PNG, loading via Pillow")
+                img = Image.open(png_path)
+                self.icon_img = ImageTk.PhotoImage(img)
+                self.root.iconphoto(True, self.icon_img)
+            else:
+                log_debug("ERROR: No icon file found at calculated paths.")
+                # 尝试最后一种可能：当前目录直接加载
+                if os.path.exists("icon.png"):
+                    log_debug("Fallback: Loading icon.png from CWD")
+                    img = Image.open("icon.png")
+                    self.icon_img = ImageTk.PhotoImage(img)
+                    self.root.iconphoto(True, self.icon_img)
         except Exception as e:
-            print(f"Icon load failed: {e}")
+            log_debug(f"EXCEPTION during icon load: {e}")
 
     def setup_ui(self):
         self.toolbar = tk.Frame(self.root, height=40)
         self.toolbar.pack(fill="x", padx=5, pady=5)
-
         self.btn_save = tk.Button(self.toolbar, text="💾 保存并清空", command=self.manual_save, relief="flat", padx=10)
         self.btn_save.pack(side="left", padx=5)
-
         self.btn_settings = tk.Button(self.toolbar, text="⚙️ 设置", command=self.open_settings, relief="flat", padx=10)
         self.btn_settings.pack(side="left", padx=5)
-
         self.btn_history = tk.Button(self.toolbar, text="🕒 时光机", command=self.open_history, relief="flat", padx=10)
         self.btn_history.pack(side="right", padx=5)
-
         self.btn_top = tk.Button(self.toolbar, text="📌 临时置顶", command=self.toggle_manual_topmost, relief="flat",
                                  padx=10)
         self.btn_top.pack(side="right", padx=5)
-
         self.text_frame = tk.Frame(self.root, padx=5, pady=5)
         self.text_frame.pack(fill="both", expand=True)
-
         self.text_area = tk.Text(self.text_frame, relief="flat", font=("Consolas", 12), undo=True, wrap="word", padx=10,
                                  pady=10)
         self.text_area.pack(fill="both", expand=True)
@@ -450,13 +444,11 @@ class SafeDraftApp:
         config_btn(self.btn_save)
         config_btn(self.btn_settings)
         config_btn(self.btn_history)
-
         if self.is_topmost:
             top_color = "#4a90e2" if "强制" in self.btn_top.cget("text") else c["btn_top_active"]
             config_btn(self.btn_top, bg=top_color, fg="white")
         else:
             config_btn(self.btn_top)
-
         self.text_area.configure(bg=c["text_bg"], fg=c["text_fg"], insertbackground=c["insert_bg"])
 
     def switch_theme(self, theme_name):
@@ -481,10 +473,8 @@ class SafeDraftApp:
         elif exit_action == "quit":
             self.quit_app()
         else:
-            res = messagebox.askyesnocancel(
-                "退出确认",
-                "是否要保持后台运行？\n\n【是】最小化到系统托盘 (推荐)\n【否】彻底退出程序\n【取消】手滑了"
-            )
+            res = messagebox.askyesnocancel("退出确认",
+                                            "是否要保持后台运行？\n\n【是】最小化到系统托盘 (推荐)\n【否】彻底退出程序\n【取消】手滑了")
             if res is True:
                 self.db.set_setting("exit_action", "tray")
                 self.minimize_to_tray()
@@ -494,7 +484,6 @@ class SafeDraftApp:
 
     def minimize_to_tray(self):
         self.root.withdraw()
-        # 使用统一的路径获取函数
         ico_path = get_asset_path("icon.ico")
         png_path = get_asset_path("icon.png")
         try:
@@ -503,7 +492,11 @@ class SafeDraftApp:
             elif os.path.exists(ico_path):
                 image = Image.open(ico_path)
             else:
-                image = Image.new('RGB', (64, 64), color=(74, 144, 226))
+                # Fallback
+                if os.path.exists("icon.png"):
+                    image = Image.open("icon.png")
+                else:
+                    image = Image.new('RGB', (64, 64), color=(74, 144, 226))
         except Exception:
             image = Image.new('RGB', (64, 64), color=(74, 144, 226))
 
@@ -515,11 +508,7 @@ class SafeDraftApp:
             icon.stop()
             self.root.after(0, self.restore_from_tray)
 
-        menu = (
-            pystray.MenuItem('显示主界面', on_tray_show, default=True),
-            pystray.MenuItem('彻底退出', on_tray_quit)
-        )
-
+        menu = (pystray.MenuItem('显示主界面', on_tray_show, default=True), pystray.MenuItem('彻底退出', on_tray_quit))
         self.tray_icon = pystray.Icon("SafeDraft", image, "SafeDraft", menu)
         threading.Thread(target=self.tray_icon.run, daemon=True).start()
 
