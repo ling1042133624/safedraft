@@ -20,6 +20,7 @@ class StorageManager:
         self.current_session_id = None
 
     def _init_db(self):
+        # 1. 草稿表
         self.cursor.execute('''
             CREATE TABLE IF NOT EXISTS drafts (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -29,6 +30,7 @@ class StorageManager:
             )
         ''')
 
+        # 2. 触发器表
         self.cursor.execute('''
             CREATE TABLE IF NOT EXISTS triggers_v2 (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -39,13 +41,36 @@ class StorageManager:
             )
         ''')
 
+        # 3. 通用设置表 (新增)
+        self.cursor.execute('''
+            CREATE TABLE IF NOT EXISTS settings (
+                key TEXT PRIMARY KEY,
+                value TEXT
+            )
+        ''')
+
+        # 初始化触发器
         self.cursor.execute('SELECT count(*) FROM triggers_v2')
         if self.cursor.fetchone()[0] == 0:
             self.cursor.executemany('INSERT OR IGNORE INTO triggers_v2 (rule_type, value, enabled) VALUES (?, ?, ?)',
                                     DEFAULT_TRIGGERS)
 
+        # 初始化默认主题
+        self.cursor.execute('INSERT OR IGNORE INTO settings (key, value) VALUES (?, ?)', ("theme", "Deep"))
+
         self.conn.commit()
 
+    # --- 通用配置读写 (新增) ---
+    def get_setting(self, key, default=None):
+        self.cursor.execute('SELECT value FROM settings WHERE key = ?', (key,))
+        row = self.cursor.fetchone()
+        return row[0] if row else default
+
+    def set_setting(self, key, value):
+        self.cursor.execute('REPLACE INTO settings (key, value) VALUES (?, ?)', (key, value))
+        self.conn.commit()
+
+    # --- 草稿保存逻辑 ---
     def save_content(self, content):
         if not content.strip(): return
         now = datetime.now()
@@ -84,15 +109,14 @@ class StorageManager:
                             (content, now.isoformat(), now.isoformat()))
         self.conn.commit()
 
+    def delete_draft(self, draft_id):
+        self.cursor.execute('DELETE FROM drafts WHERE id = ?', (draft_id,))
+        self.conn.commit()
+
     def get_history(self):
         self.cursor.execute('SELECT id, content, created_at, last_updated_at FROM drafts ORDER BY last_updated_at DESC')
         rows = self.cursor.fetchall()
         return rows
-
-    # --- 新增：删除功能 ---
-    def delete_draft(self, draft_id):
-        self.cursor.execute('DELETE FROM drafts WHERE id = ?', (draft_id,))
-        self.conn.commit()
 
     # --- 触发器管理 ---
     def get_all_triggers(self):

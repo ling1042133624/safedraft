@@ -1,7 +1,7 @@
 # 核心依赖
 pywin32>=306
 psutil>=5.9.0
-
+keyboard>=0.13.5
 # 打包工具 (Nuitka)
 nuitka>=2.0
 ordered-set

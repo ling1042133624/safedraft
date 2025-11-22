@@ -2,39 +2,105 @@ import tkinter as tk
 from tkinter import ttk, messagebox, simpledialog, filedialog
 from datetime import datetime
 import os
+import sys
+import winreg
+import keyboard  # --- 新增依赖 ---
 from storage import StorageManager
 from watcher import WindowWatcher
 
-# --- 样式配置 ---
-THEME_BG = "#1e1e1e"
-THEME_FG = "#d4d4d4"
-THEME_ACCENT = "#3c3c3c"
-THEME_LIST_BG = "#252526"
-THEME_LIST_FG = "#e0e0e0"
-THEME_BTN_HOVER = "#505050"
+# --- 主题定义 ---
+THEMES = {
+    "Deep": {
+        "bg": "#1e1e1e",
+        "fg": "#d4d4d4",
+        "accent": "#3c3c3c",
+        "list_bg": "#252526",
+        "list_fg": "#e0e0e0",
+        "text_bg": "#1e1e1e",
+        "text_fg": "#d4d4d4",
+        "insert_bg": "white",
+        "btn_top_active": "#d35400",
+        "btn_save_success": "#4caf50",
+    },
+    "Light": {
+        "bg": "#f0f0f0",
+        "fg": "#333333",
+        "accent": "#e0e0e0",
+        "list_bg": "#ffffff",
+        "list_fg": "#000000",
+        "text_bg": "#ffffff",
+        "text_fg": "#000000",
+        "insert_bg": "black",
+        "btn_top_active": "#e67e22",
+        "btn_save_success": "#27ae60",
+    }
+}
+
+
+class StartupManager:
+    KEY_PATH = r"Software\Microsoft\Windows\CurrentVersion\Run"
+    APP_NAME = "SafeDraft"
+
+    @staticmethod
+    def is_autostart_enabled():
+        try:
+            key = winreg.OpenKey(winreg.HKEY_CURRENT_USER, StartupManager.KEY_PATH, 0, winreg.KEY_READ)
+            winreg.QueryValueEx(key, StartupManager.APP_NAME)
+            key.Close()
+            return True
+        except FileNotFoundError:
+            return False
+
+    @staticmethod
+    def set_autostart(enable):
+        try:
+            key = winreg.OpenKey(winreg.HKEY_CURRENT_USER, StartupManager.KEY_PATH, 0, winreg.KEY_ALL_ACCESS)
+            if enable:
+                exe_path = sys.executable
+                winreg.SetValueEx(key, StartupManager.APP_NAME, 0, winreg.REG_SZ, exe_path)
+            else:
+                try:
+                    winreg.DeleteValue(key, StartupManager.APP_NAME)
+                except FileNotFoundError:
+                    pass
+            key.Close()
+        except Exception as e:
+            messagebox.showerror("错误", f"修改注册表失败: {e}")
 
 
 class HistoryWindow(tk.Toplevel):
-    """独立的时光机弹窗"""
-
-    def __init__(self, parent, db, restore_callback):
+    def __init__(self, parent, db, restore_callback, theme):
         super().__init__(parent)
         self.title("时光机 - 历史归档")
-        self.geometry("400x550")  # 稍微加高一点给按钮留空间
-        self.configure(bg=THEME_BG)
+        self.geometry("400x550")
         self.db = db
         self.restore_callback = restore_callback
+        self.colors = theme
 
-        # 顶部说明
-        lbl = tk.Label(self, text="双击记录可恢复 | 选中可删除", bg=THEME_BG, fg="#888888", pady=10)
+        self.configure(bg=self.colors["bg"])
+        self.setup_ui()
+        self.refresh_data()
+        self.load_icon()
+
+    def load_icon(self):
+        try:
+            if os.path.exists("icon.ico"):
+                self.iconbitmap("icon.ico")
+            elif os.path.exists("icon.png"):
+                img = tk.PhotoImage(file="icon.png")
+                self.iconphoto(True, img)
+        except:
+            pass
+
+    def setup_ui(self):
+        lbl = tk.Label(self, text="双击记录可恢复 | 选中可删除", bg=self.colors["bg"], fg="#888888", pady=10)
         lbl.pack(side="top", fill="x")
 
-        # 列表区域
-        frame = tk.Frame(self, bg=THEME_BG)
+        frame = tk.Frame(self, bg=self.colors["bg"])
         frame.pack(fill="both", expand=True, padx=10, pady=(0, 5))
 
         self.scrollbar = ttk.Scrollbar(frame, orient="vertical")
-        self.listbox = tk.Listbox(frame, bg=THEME_LIST_BG, fg=THEME_LIST_FG,
+        self.listbox = tk.Listbox(frame, bg=self.colors["list_bg"], fg=self.colors["list_fg"],
                                   relief="flat", highlightthickness=0,
                                   selectbackground="#4a90e2",
                                   yscrollcommand=self.scrollbar.set,
@@ -43,105 +109,141 @@ class HistoryWindow(tk.Toplevel):
         self.scrollbar.config(command=self.listbox.yview)
         self.scrollbar.pack(side="right", fill="y")
         self.listbox.pack(side="left", fill="both", expand=True)
-
         self.listbox.bind("<Double-Button-1>", self.on_double_click)
 
-        # --- 底部按钮区 (新增) ---
-        btn_frame = tk.Frame(self, bg=THEME_BG, pady=10)
+        btn_frame = tk.Frame(self, bg=self.colors["bg"], pady=10)
         btn_frame.pack(side="bottom", fill="x", padx=10)
 
-        # 删除按钮
         tk.Button(btn_frame, text="🗑️ 删除选中", command=self.on_delete,
-                  bg=THEME_BG, fg="#ff5555", relief="flat",
-                  activebackground="#2d2d2d", activeforeground="#ff5555").pack(side="right")
-
-        # 刷新数据
-        self.refresh_data()
+                  bg=self.colors["bg"], fg="#ff5555", relief="flat",
+                  activebackground=self.colors["accent"], activeforeground="#ff5555").pack(side="right")
 
     def refresh_data(self):
         self.listbox.delete(0, "end")
         self.history_data = self.db.get_history()
-
         if not self.history_data:
             self.listbox.insert("end", "暂无历史记录")
             return
-
         for row in self.history_data:
-            # row: (id, content, created_at, last_updated_at)
             try:
-                dt_str = row[3]
-                dt = datetime.fromisoformat(dt_str)
-                if dt.date() == datetime.now().date():
-                    time_str = dt.strftime("%H:%M")
-                else:
-                    time_str = dt.strftime("%m/%d %H:%M")
-
+                dt = datetime.fromisoformat(row[3])
+                time_str = dt.strftime("%H:%M") if dt.date() == datetime.now().date() else dt.strftime("%m/%d %H:%M")
                 content = row[1].strip().replace("\n", " ")
-                if len(content) > 20:
-                    content = content[:20] + "..."
-
+                if len(content) > 20: content = content[:20] + "..."
                 self.listbox.insert("end", f"[{time_str}] {content}")
-            except Exception:
+            except:
                 pass
 
     def on_double_click(self, event):
         selection = self.listbox.curselection()
         if not selection: return
         index = selection[0]
-
         if index >= len(self.history_data): return
-
-        content = self.history_data[index][1]
-        self.restore_callback(content)
+        self.restore_callback(self.history_data[index][1])
 
     def on_delete(self):
-        """删除选中项逻辑"""
         selection = self.listbox.curselection()
-        if not selection:
-            messagebox.showinfo("提示", "请先选择一条记录")
-            return
-
+        if not selection: return
         index = selection[0]
-        # 防止点击到"暂无记录"
         if index >= len(self.history_data): return
-
-        # 获取数据库 ID (row[0] 是 id)
-        draft_id = self.history_data[index][0]
-
         if messagebox.askyesno("确认删除", "确定要永久删除这条记录吗？"):
-            self.db.delete_draft(draft_id)
+            self.db.delete_draft(self.history_data[index][0])
             self.refresh_data()
 
 
 class SettingsDialog(tk.Toplevel):
-    """监控设置弹窗"""
-
-    def __init__(self, parent, db, watcher):
+    def __init__(self, parent, db, watcher, app):
         super().__init__(parent)
-        self.title("监控规则设置")
-        self.geometry("450x550")
-        self.configure(bg=THEME_BG)
+        self.title("设置")
+        self.geometry("480x600")
         self.db = db
         self.watcher = watcher
+        self.app = app
+        self.colors = app.colors
 
-        header = tk.Label(self, text="配置 SafeDraft 自动弹出的触发条件", bg=THEME_BG, fg="#888888", pady=10)
-        header.pack()
+        self.configure(bg=self.colors["bg"])
+        self.load_icon()
 
-        btn_frame = tk.Frame(self, bg=THEME_BG, pady=5)
-        btn_frame.pack(fill="x", padx=10)
+        style = ttk.Style()
+        style.configure("TNotebook", background=self.colors["bg"])
+        style.configure("TNotebook.Tab", background=self.colors["accent"], foreground="black")
+
+        self.notebook = ttk.Notebook(self)
+        self.notebook.pack(fill="both", expand=True, padx=10, pady=10)
+
+        self.page_rules = tk.Frame(self.notebook, bg=self.colors["bg"])
+        self.notebook.add(self.page_rules, text=" 监控规则 ")
+        self.setup_rules_ui()
+
+        self.page_general = tk.Frame(self.notebook, bg=self.colors["bg"])
+        self.notebook.add(self.page_general, text=" 常规设置 ")
+        self.setup_general_ui()
+
+    def load_icon(self):
+        try:
+            if os.path.exists("icon.ico"):
+                self.iconbitmap("icon.ico")
+            elif os.path.exists("icon.png"):
+                img = tk.PhotoImage(file="icon.png")
+                self.iconphoto(True, img)
+        except:
+            pass
+
+    def setup_general_ui(self):
+        # Hotkey Hint
+        frame_hotkey = tk.Frame(self.page_general, bg=self.colors["bg"], pady=10)
+        frame_hotkey.pack(fill="x", padx=20)
+        tk.Label(frame_hotkey, text="全局快捷键: Ctrl + Alt + S (快速呼出)",
+                 bg=self.colors["bg"], fg="#4a90e2", font=("Arial", 10, "bold")).pack(anchor="w")
+
+        # Boot
+        frame_boot = tk.Frame(self.page_general, bg=self.colors["bg"], pady=10)
+        frame_boot.pack(fill="x", padx=20)
+        self.var_boot = tk.BooleanVar(value=StartupManager.is_autostart_enabled())
+        chk_boot = tk.Checkbutton(frame_boot, text="开机自动启动 SafeDraft", variable=self.var_boot,
+                                  bg=self.colors["bg"], fg=self.colors["fg"], selectcolor=self.colors["accent"],
+                                  activebackground=self.colors["bg"], activeforeground=self.colors["fg"],
+                                  command=self.toggle_boot)
+        chk_boot.pack(anchor="w")
+        tk.Label(frame_boot, text="注意：受安全软件影响，可能需要允许注册表修改。",
+                 bg=self.colors["bg"], fg="#888888", font=("Arial", 9)).pack(anchor="w", padx=20)
+
+        # Theme
+        frame_theme = tk.Frame(self.page_general, bg=self.colors["bg"], pady=20)
+        frame_theme.pack(fill="x", padx=20)
+        tk.Label(frame_theme, text="界面主题:", bg=self.colors["bg"], fg=self.colors["fg"]).pack(side="left")
+        current_theme = self.db.get_setting("theme", "Deep")
+        self.combo_theme = ttk.Combobox(frame_theme, values=["Deep", "Light"], state="readonly", width=10)
+        self.combo_theme.set(current_theme)
+        self.combo_theme.pack(side="left", padx=10)
+        self.combo_theme.bind("<<ComboboxSelected>>", self.change_theme)
+
+    def toggle_boot(self):
+        StartupManager.set_autostart(self.var_boot.get())
+
+    def change_theme(self, event):
+        theme_name = self.combo_theme.get()
+        self.db.set_setting("theme", theme_name)
+        self.app.switch_theme(theme_name)
+        self.colors = self.app.colors
+        self.configure(bg=self.colors["bg"])
+
+    def setup_rules_ui(self):
+        btn_frame = tk.Frame(self.page_rules, bg=self.colors["bg"], pady=5)
+        btn_frame.pack(fill="x", padx=0)
 
         tk.Button(btn_frame, text="➕ 选择应用 (.exe)", command=self.add_exe,
                   bg="#4a90e2", fg="white", relief="flat", padx=10).pack(side="left", padx=5)
 
         tk.Button(btn_frame, text="➕ 添加网址/标题", command=self.add_title_keyword,
-                  bg=THEME_ACCENT, fg=THEME_FG, relief="flat", padx=10).pack(side="left", padx=5)
+                  bg=self.colors["accent"], fg=self.colors["fg"], relief="flat", padx=10).pack(side="left", padx=5)
 
-        list_frame = tk.Frame(self, bg=THEME_BG)
-        list_frame.pack(fill="both", expand=True, padx=10, pady=10)
+        list_frame = tk.Frame(self.page_rules, bg=self.colors["bg"])
+        list_frame.pack(fill="both", expand=True, padx=0, pady=10)
 
-        self.canvas = tk.Canvas(list_frame, bg=THEME_BG, highlightthickness=0)
+        self.canvas = tk.Canvas(list_frame, bg=self.colors["bg"], highlightthickness=0)
         self.scrollbar = ttk.Scrollbar(list_frame, orient="vertical", command=self.canvas.yview)
-        self.scrollable_frame = tk.Frame(self.canvas, bg=THEME_BG)
+        self.scrollable_frame = tk.Frame(self.canvas, bg=self.colors["bg"])
 
         self.scrollable_frame.bind("<Configure>", lambda e: self.canvas.configure(scrollregion=self.canvas.bbox("all")))
         self.canvas.create_window((0, 0), window=self.scrollable_frame, anchor="nw")
@@ -149,42 +251,36 @@ class SettingsDialog(tk.Toplevel):
 
         self.canvas.pack(side="left", fill="both", expand=True)
         self.scrollbar.pack(side="right", fill="y")
-
         self.load_rules()
 
     def load_rules(self):
         for w in self.scrollable_frame.winfo_children(): w.destroy()
         rules = self.db.get_all_triggers()
-
         for rid, rtype, val, enabled in rules:
-            row = tk.Frame(self.scrollable_frame, bg=THEME_BG, pady=2)
+            row = tk.Frame(self.scrollable_frame, bg=self.colors["bg"], pady=2)
             row.pack(fill="x")
-
             var = tk.BooleanVar(value=bool(enabled))
-            cb = tk.Checkbutton(row, variable=var, bg=THEME_BG, selectcolor=THEME_ACCENT,
-                                activebackground=THEME_BG,
+            cb = tk.Checkbutton(row, variable=var, bg=self.colors["bg"], selectcolor=self.colors["accent"],
+                                activebackground=self.colors["bg"],
                                 command=lambda i=rid, v=var: self.toggle_rule(i, v.get()))
             cb.pack(side="left")
-
             type_color = "#d35400" if rtype == 'process' else "#2980b9"
             type_text = "[应用]" if rtype == 'process' else "[标题]"
-            tk.Label(row, text=type_text, fg=type_color, bg=THEME_BG, width=6, anchor="w").pack(side="left")
-            tk.Label(row, text=val, fg=THEME_FG, bg=THEME_BG).pack(side="left")
-
-            del_btn = tk.Label(row, text="×", fg="#ff5555", bg=THEME_BG, cursor="hand2", font=("Arial", 12))
+            tk.Label(row, text=type_text, fg=type_color, bg=self.colors["bg"], width=6, anchor="w").pack(side="left")
+            tk.Label(row, text=val, fg=self.colors["fg"], bg=self.colors["bg"]).pack(side="left")
+            del_btn = tk.Label(row, text="×", fg="#ff5555", bg=self.colors["bg"], cursor="hand2", font=("Arial", 12))
             del_btn.pack(side="right", padx=10)
             del_btn.bind("<Button-1>", lambda e, i=rid: self.delete_rule(i))
 
     def add_exe(self):
-        file_path = filedialog.askopenfilename(title="选择要监控的执行文件", filetypes=[("Executables", "*.exe")])
+        file_path = filedialog.askopenfilename(title="选择执行文件", filetypes=[("Executables", "*.exe")])
         if file_path:
-            exe_name = os.path.basename(file_path).lower()
-            self.db.add_trigger('process', exe_name)
+            self.db.add_trigger('process', os.path.basename(file_path).lower())
             self.watcher.reload_rules()
             self.load_rules()
 
     def add_title_keyword(self):
-        kw = simpledialog.askstring("添加关键词", "请输入窗口标题包含的关键词\n(例如: GitHub)")
+        kw = simpledialog.askstring("添加关键词", "请输入标题关键词")
         if kw and kw.strip():
             self.db.add_trigger('title', kw.strip())
             self.watcher.reload_rules()
@@ -195,7 +291,7 @@ class SettingsDialog(tk.Toplevel):
         self.watcher.reload_rules()
 
     def delete_rule(self, rid):
-        if messagebox.askyesno("确认", "删除此监控规则？"):
+        if messagebox.askyesno("确认", "删除此规则？"):
             self.db.delete_trigger(rid)
             self.watcher.reload_rules()
             self.load_rules()
@@ -204,51 +300,92 @@ class SettingsDialog(tk.Toplevel):
 class SafeDraftApp:
     def __init__(self, root):
         self.root = root
+
+        # --- 初始化状态变量 ---
+        self.is_topmost = False
+        self.topmost_timer = None
+
         self.db = StorageManager()
         self.watcher = WindowWatcher(self.db, self.on_trigger_detected)
         self.watcher.start()
 
+        # --- 注册全局热键 Ctrl+Alt+S ---
+        try:
+            keyboard.add_hotkey('ctrl+alt+d', self.on_global_hotkey)
+        except Exception as e:
+            print(f"Hotkey register failed: {e}")
+
+        theme_name = self.db.get_setting("theme", "Deep")
+        self.colors = THEMES.get(theme_name, THEMES["Deep"])
+
         self.setup_window()
         self.setup_ui()
         self.setup_events()
-
-        self.is_topmost = False
-        self.topmost_timer = None
+        self.apply_theme()
 
     def setup_window(self):
         self.root.title("SafeDraft")
         self.root.geometry("500x400+100+100")
-        self.root.configure(bg=THEME_BG)
         self.root.attributes("-alpha", 0.95)
 
+        # 优化图标加载逻辑：优先 .ico
+        try:
+            if os.path.exists("icon.ico"):
+                self.root.iconbitmap("icon.ico")
+            elif os.path.exists("icon.png"):
+                img = tk.PhotoImage(file="icon.png")
+                self.root.iconphoto(True, img)
+        except Exception as e:
+            print(f"Icon load failed: {e}")
+
     def setup_ui(self):
-        # Toolbar
-        self.toolbar = tk.Frame(self.root, bg=THEME_BG, height=40)
+        self.toolbar = tk.Frame(self.root, height=40)
         self.toolbar.pack(fill="x", padx=5, pady=5)
 
-        self.btn_save = tk.Button(self.toolbar, text="💾 保存并清空", command=self.manual_save,
-                                  bg=THEME_ACCENT, fg=THEME_FG, relief="flat", padx=10)
+        self.btn_save = tk.Button(self.toolbar, text="💾 保存并清空", command=self.manual_save, relief="flat", padx=10)
         self.btn_save.pack(side="left", padx=5)
 
-        self.btn_settings = tk.Button(self.toolbar, text="⚙️ 监控规则", command=self.open_settings,
-                                      bg=THEME_ACCENT, fg=THEME_FG, relief="flat", padx=10)
+        self.btn_settings = tk.Button(self.toolbar, text="⚙️ 设置", command=self.open_settings, relief="flat", padx=10)
         self.btn_settings.pack(side="left", padx=5)
 
-        self.btn_history = tk.Button(self.toolbar, text="🕒 时光机", command=self.open_history,
-                                     bg=THEME_ACCENT, fg=THEME_FG, relief="flat", padx=10)
+        self.btn_history = tk.Button(self.toolbar, text="🕒 时光机", command=self.open_history, relief="flat", padx=10)
         self.btn_history.pack(side="right", padx=5)
 
-        self.btn_top = tk.Button(self.toolbar, text="📌 临时置顶", command=self.toggle_manual_topmost,
-                                 bg=THEME_ACCENT, fg=THEME_FG, relief="flat", padx=10)
+        self.btn_top = tk.Button(self.toolbar, text="📌 临时置顶", command=self.toggle_manual_topmost, relief="flat",
+                                 padx=10)
         self.btn_top.pack(side="right", padx=5)
 
-        # Text Area
-        self.text_frame = tk.Frame(self.root, bg=THEME_BG, padx=5, pady=5)
+        self.text_frame = tk.Frame(self.root, padx=5, pady=5)
         self.text_frame.pack(fill="both", expand=True)
 
-        self.text_area = tk.Text(self.text_frame, bg=THEME_BG, fg=THEME_FG, insertbackground="white",
-                                 relief="flat", font=("Consolas", 12), undo=True, wrap="word", padx=10, pady=10)
+        self.text_area = tk.Text(self.text_frame, relief="flat", font=("Consolas", 12), undo=True, wrap="word", padx=10,
+                                 pady=10)
         self.text_area.pack(fill="both", expand=True)
+
+    def apply_theme(self):
+        c = self.colors
+        self.root.configure(bg=c["bg"])
+        self.toolbar.configure(bg=c["bg"])
+        self.text_frame.configure(bg=c["bg"])
+
+        def config_btn(btn, bg=c["accent"], fg=c["fg"]):
+            btn.configure(bg=bg, fg=fg, activebackground=c["bg"], activeforeground=fg)
+
+        config_btn(self.btn_save)
+        config_btn(self.btn_settings)
+        config_btn(self.btn_history)
+
+        if self.is_topmost:
+            top_color = "#4a90e2" if "强制" in self.btn_top.cget("text") else c["btn_top_active"]
+            config_btn(self.btn_top, bg=top_color, fg="white")
+        else:
+            config_btn(self.btn_top)
+
+        self.text_area.configure(bg=c["text_bg"], fg=c["text_fg"], insertbackground=c["insert_bg"])
+
+    def switch_theme(self, theme_name):
+        self.colors = THEMES.get(theme_name, THEMES["Deep"])
+        self.apply_theme()
 
     def setup_events(self):
         self.text_area.bind("<KeyRelease>", self.on_key_release)
@@ -263,21 +400,20 @@ class SafeDraftApp:
         if not content.strip():
             self._flash_btn(self.btn_save, "空内容!", "#ff5555")
             return
-
         self.db.save_content_forced(content)
         self.text_area.delete("1.0", "end")
         self.db.current_session_id = None
-
-        self._flash_btn(self.btn_save, "已归档 ✔", "#4caf50")
+        self._flash_btn(self.btn_save, "已归档 ✔", self.colors["btn_save_success"])
 
     def _flash_btn(self, btn, text, color):
         orig_text = "💾 保存并清空"
-        orig_fg = THEME_FG
+        orig_fg = self.colors["fg"]
+        orig_bg = self.colors["accent"]
         btn.config(text=text, fg=color)
-        self.root.after(1000, lambda: btn.config(text=orig_text, fg=orig_fg))
+        self.root.after(1000, lambda: btn.config(text=orig_text, fg=orig_fg, bg=orig_bg))
 
     def open_history(self):
-        HistoryWindow(self.root, self.db, self.restore_draft_content)
+        HistoryWindow(self.root, self.db, self.restore_draft_content, self.colors)
 
     def restore_draft_content(self, content):
         if messagebox.askyesno("恢复确认", "确定要覆盖当前输入框的内容吗？"):
@@ -287,8 +423,23 @@ class SafeDraftApp:
             self.text_area.focus_set()
 
     def open_settings(self):
-        SettingsDialog(self.root, self.db, self.watcher)
+        SettingsDialog(self.root, self.db, self.watcher, self)
 
+    # --- 热键回调 ---
+    def on_global_hotkey(self):
+        # keyboard 线程调用，需要转回主线程更新 UI
+        self.root.after(0, self._perform_auto_pop_force)
+
+    def _perform_auto_pop_force(self):
+        """热键触发的强制弹出"""
+        if self.root.state() == 'iconic':
+            self.root.deiconify()
+
+        self.root.lift()  # 提升窗口层级
+        self.root.focus_force()  # 强制获取焦点
+        self._start_auto_topmost()
+
+    # --- 自动弹出 (Watcher触发) ---
     def on_trigger_detected(self):
         self.root.after(0, self._perform_auto_pop)
 
@@ -302,7 +453,7 @@ class SafeDraftApp:
     def _start_auto_topmost(self):
         self.is_topmost = True
         self.root.attributes('-topmost', True)
-        self.btn_top.config(text="📌 锁定(2m)", bg="#d35400", fg="white")
+        self.btn_top.config(text="📌 锁定(2m)", bg=self.colors["btn_top_active"], fg="white")
         if self.topmost_timer: self.root.after_cancel(self.topmost_timer)
         self.topmost_timer = self.root.after(120000, self._cancel_topmost)
 
@@ -310,7 +461,7 @@ class SafeDraftApp:
         self.is_topmost = False
         self.topmost_timer = None
         self.root.attributes('-topmost', False)
-        self.btn_top.config(text="📌 临时置顶", bg=THEME_ACCENT, fg=THEME_FG)
+        self.btn_top.config(text="📌 临时置顶", bg=self.colors["accent"], fg=self.colors["fg"])
 
     def toggle_manual_topmost(self):
         if self.is_topmost:
@@ -327,6 +478,7 @@ class SafeDraftApp:
         self.watcher.stop()
         self.db.close()
         self.root.destroy()
+        os._exit(0)  # 确保 keyboard 线程也彻底退出
 
 
 if __name__ == "__main__":
