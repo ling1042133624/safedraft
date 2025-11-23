@@ -6,58 +6,40 @@ import sys
 import threading
 import keyboard
 import pystray
+import base64
+import io
 from PIL import Image, ImageTk
 from storage import StorageManager
 from watcher import WindowWatcher
+
+# --- 导入转换好的图标数据 ---
+# 确保 icon_data.py 在同一目录下
+try:
+    from icon_data import ICON_BASE64
+except ImportError:
+    ICON_BASE64 = None  # 防止没有生成文件时报错
 
 if sys.platform == "win32":
     import winreg
 
 
 # ---------------------------------------------------------
-# 1. 终极路径获取逻辑 (穷举法)
+# 核心：从 Base64 加载图标 (内存加载，无视路径)
 # ---------------------------------------------------------
-def get_asset_path(filename):
+def get_icon_image():
     """
-    尝试在所有可能的目录下寻找文件。
-    返回找到的第一个存在的绝对路径，如果都没找到，返回当前目录下的路径。
+    将 Base64 字符串转换为 PIL.Image 对象。
+    如果数据不存在，返回一个默认的蓝色色块。
     """
-    search_dirs = []
+    if ICON_BASE64:
+        try:
+            image_data = base64.b64decode(ICON_BASE64)
+            return Image.open(io.BytesIO(image_data))
+        except Exception as e:
+            print(f"Icon decode error: {e}")
 
-    # 1. 当前工作目录 (双击 exe 时通常就是这里)
-    search_dirs.append(os.getcwd())
-
-    # 2. EXE 所在的物理目录 (sys.argv[0])
-    if getattr(sys, 'frozen', False):
-        search_dirs.append(os.path.dirname(os.path.abspath(sys.argv[0])))
-    else:
-        search_dirs.append(os.path.dirname(os.path.abspath(__file__)))
-
-    # 3. Nuitka/PyInstaller 的临时解压目录 (sys.executable)
-    if getattr(sys, 'frozen', False):
-        search_dirs.append(os.path.dirname(sys.executable))
-
-    # 开始寻找
-    for directory in search_dirs:
-        full_path = os.path.join(directory, filename)
-        if os.path.exists(full_path):
-            return full_path
-
-    # 如果都没找到，默认返回当前目录 (虽然不存在)
-    return os.path.join(os.getcwd(), filename)
-
-
-# ---------------------------------------------------------
-# 2. 调试日志 (强制写在当前目录下)
-# ---------------------------------------------------------
-def log_debug(message):
-    try:
-        # 强制写在当前工作目录，确保你能看到
-        log_path = os.path.join(os.getcwd(), "_safedraft_debug.txt")
-        with open(log_path, "a", encoding="utf-8") as f:
-            f.write(f"[{datetime.now()}] {message}\n")
-    except:
-        pass
+    # 兜底：生成一个蓝色方块，防止程序崩溃
+    return Image.new('RGB', (64, 64), color=(74, 144, 226))
 
 
 # --- 主题定义 ---
@@ -106,7 +88,7 @@ class StartupManager:
             try:
                 key = winreg.OpenKey(winreg.HKEY_CURRENT_USER, StartupManager.WIN_KEY_PATH, 0, winreg.KEY_ALL_ACCESS)
                 if enable:
-                    # 修复：开机自启也使用 sys.argv[0] 锁定物理 exe
+                    # 确保写入的是 exe 的绝对路径
                     exe_path = os.path.abspath(sys.argv[0])
                     winreg.SetValueEx(key, StartupManager.APP_NAME, 0, winreg.REG_SZ, exe_path)
                 else:
@@ -135,15 +117,11 @@ class HistoryWindow(tk.Toplevel):
         self.load_icon()
 
     def load_icon(self):
-        ico_path = get_asset_path("icon.ico")
-        png_path = get_asset_path("icon.png")
+        # 统一从内存加载
         try:
-            if sys.platform == "win32" and os.path.exists(ico_path):
-                self.iconbitmap(ico_path)
-            elif os.path.exists(png_path):
-                img = Image.open(png_path)
-                self.icon_img = ImageTk.PhotoImage(img)
-                self.iconphoto(True, self.icon_img)
+            pil_img = get_icon_image()
+            self.tk_icon = ImageTk.PhotoImage(pil_img)
+            self.iconphoto(True, self.tk_icon)
         except:
             pass
 
@@ -223,15 +201,10 @@ class SettingsDialog(tk.Toplevel):
         self.setup_general_ui()
 
     def load_icon(self):
-        ico_path = get_asset_path("icon.ico")
-        png_path = get_asset_path("icon.png")
         try:
-            if sys.platform == "win32" and os.path.exists(ico_path):
-                self.iconbitmap(ico_path)
-            elif os.path.exists(png_path):
-                img = Image.open(png_path)
-                self.icon_img = ImageTk.PhotoImage(img)
-                self.iconphoto(True, self.icon_img)
+            pil_img = get_icon_image()
+            self.tk_icon = ImageTk.PhotoImage(pil_img)
+            self.iconphoto(True, self.tk_icon)
         except:
             pass
 
@@ -387,32 +360,14 @@ class SafeDraftApp:
         alpha = float(self.db.get_setting("window_alpha", "0.95"))
         self.root.attributes("-alpha", alpha)
 
-        # --- 终极加载逻辑 + 调试日志 ---
-        log_debug("Starting Icon Load...")
-        ico_path = get_asset_path("icon.ico")
-        png_path = get_asset_path("icon.png")
-        log_debug(f"Calculated ICO path: {ico_path}")
-        log_debug(f"Calculated PNG path: {png_path}")
-
+        # --- 从内存加载图标 ---
         try:
-            if sys.platform == "win32" and os.path.exists(ico_path):
-                log_debug("Found ICO, loading via iconbitmap")
-                self.root.iconbitmap(ico_path)
-            elif os.path.exists(png_path):
-                log_debug("Found PNG, loading via Pillow")
-                img = Image.open(png_path)
-                self.icon_img = ImageTk.PhotoImage(img)
-                self.root.iconphoto(True, self.icon_img)
-            else:
-                log_debug("ERROR: No icon file found at calculated paths.")
-                # 尝试最后一种可能：当前目录直接加载
-                if os.path.exists("icon.png"):
-                    log_debug("Fallback: Loading icon.png from CWD")
-                    img = Image.open("icon.png")
-                    self.icon_img = ImageTk.PhotoImage(img)
-                    self.root.iconphoto(True, self.icon_img)
+            pil_img = get_icon_image()
+            # 注意：必须将 photo 对象保存为实例属性，防止被垃圾回收 (GC)
+            self.app_icon = ImageTk.PhotoImage(pil_img)
+            self.root.iconphoto(True, self.app_icon)
         except Exception as e:
-            log_debug(f"EXCEPTION during icon load: {e}")
+            print(f"Icon set failed: {e}")
 
     def setup_ui(self):
         self.toolbar = tk.Frame(self.root, height=40)
@@ -484,21 +439,8 @@ class SafeDraftApp:
 
     def minimize_to_tray(self):
         self.root.withdraw()
-        ico_path = get_asset_path("icon.ico")
-        png_path = get_asset_path("icon.png")
-        try:
-            if os.path.exists(png_path):
-                image = Image.open(png_path)
-            elif os.path.exists(ico_path):
-                image = Image.open(ico_path)
-            else:
-                # Fallback
-                if os.path.exists("icon.png"):
-                    image = Image.open("icon.png")
-                else:
-                    image = Image.new('RGB', (64, 64), color=(74, 144, 226))
-        except Exception:
-            image = Image.new('RGB', (64, 64), color=(74, 144, 226))
+        # --- 直接从内存获取图片 ---
+        pil_img = get_icon_image()
 
         def on_tray_quit(icon, item):
             icon.stop()
@@ -509,7 +451,7 @@ class SafeDraftApp:
             self.root.after(0, self.restore_from_tray)
 
         menu = (pystray.MenuItem('显示主界面', on_tray_show, default=True), pystray.MenuItem('彻底退出', on_tray_quit))
-        self.tray_icon = pystray.Icon("SafeDraft", image, "SafeDraft", menu)
+        self.tray_icon = pystray.Icon("SafeDraft", pil_img, "SafeDraft", menu)
         threading.Thread(target=self.tray_icon.run, daemon=True).start()
 
     def restore_from_tray(self):
@@ -615,6 +557,22 @@ class SafeDraftApp:
 
 
 if __name__ == "__main__":
-    root = tk.Tk()
-    app = SafeDraftApp(root)
-    root.mainloop()
+    if __name__ == "__main__":
+        # ------------------------------------------------------------------
+        # 修复任务栏图标的核心代码
+        # ------------------------------------------------------------------
+        if sys.platform == "win32":
+            import ctypes
+
+            # 这个字符串可以是任意唯一的名称
+            myappid = 'SafeDraft.App.Version.1.0'
+            try:
+                # 告诉 Windows：我是独立应用，不要合并到 Python 组里
+                ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID(myappid)
+            except Exception as e:
+                print(f"Set AppID failed: {e}")
+        # ------------------------------------------------------------------
+
+        root = tk.Tk()
+        app = SafeDraftApp(root)
+        root.mainloop()

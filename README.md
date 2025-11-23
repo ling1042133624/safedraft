@@ -78,9 +78,11 @@ MacOS 的安全机制（SIP 和 辅助功能权限）比 Windows 严格得多：
 pip install pyinstaller
 pyinstaller --name "SafeDraft" --windowed --icon=icon.icns --onefile main.py
 
-python -m nuitka --standalone --onefile --windows-disable-console --enable-plugin=tk-inter --output-filename=SafeDraft.exe main.py 
+# 开发测试用这个（生成 dist/SafeDraft.dist 文件夹）
+python -m nuitka --standalone --windows-disable-console --enable-plugin=tk-inter --jobs=target main.py
 
-python -m nuitka --standalone --onefile --windows-disable-console --enable-plugin=tk-inter --enable-plugin=anti-bloat --no-pyi-file --output-filename=SafeDraft.exe main.py
+# 发布方案
+python -m nuitka --standalone --onefile --jobs=8 --windows-disable-console --enable-plugin=tk-inter --enable-plugin=anti-bloat --no-pyi-file --output-filename=SafeDraft.exe main.py
 ```
 
 生成的应用会在 `dist/SafeDraft.app`。
