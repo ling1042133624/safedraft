@@ -36,7 +36,11 @@ pip install -r requirements.txt
 ```bash
 python -m nuitka --standalone --onefile --windows-disable-console --enable-plugin=tk-inter --output-filename=SafeDraft.exe main.py
 ```
+```angular2html
+# 发布方案
+python -m nuitka --standalone --onefile --jobs=8 --windows-disable-console --enable-plugin=tk-inter --enable-plugin=anti-bloat --no-pyi-file --output-filename=SafeDraft.exe main.py
 
+```
 
 ### macOS打包 (在 macOS 上操作)
 
