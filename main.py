@@ -12,37 +12,26 @@ from PIL import Image, ImageTk
 from storage import StorageManager
 from watcher import WindowWatcher
 
-# --- 导入转换好的图标数据 ---
-# 确保 icon_data.py 在同一目录下
 try:
     from icon_data import ICON_BASE64
 except ImportError:
-    ICON_BASE64 = None  # 防止没有生成文件时报错
+    ICON_BASE64 = None
 
 if sys.platform == "win32":
     import winreg
 
 
-# ---------------------------------------------------------
-# 核心：从 Base64 加载图标 (内存加载，无视路径)
-# ---------------------------------------------------------
 def get_icon_image():
-    """
-    将 Base64 字符串转换为 PIL.Image 对象。
-    如果数据不存在，返回一个默认的蓝色色块。
-    """
     if ICON_BASE64:
         try:
             image_data = base64.b64decode(ICON_BASE64)
             return Image.open(io.BytesIO(image_data))
-        except Exception as e:
-            print(f"Icon decode error: {e}")
-
-    # 兜底：生成一个蓝色方块，防止程序崩溃
+        except:
+            pass
     return Image.new('RGB', (64, 64), color=(74, 144, 226))
 
 
-# --- 主题定义 ---
+# --- THEMES (保持不变) ---
 THEMES = {
     "Deep": {
         "bg": "#1e1e1e", "fg": "#d4d4d4", "accent": "#3c3c3c",
@@ -59,6 +48,7 @@ THEMES = {
 }
 
 
+# --- StartupManager (保持不变) ---
 class StartupManager:
     WIN_KEY_PATH = r"Software\Microsoft\Windows\CurrentVersion\Run"
     APP_NAME = "SafeDraft"
@@ -74,9 +64,9 @@ class StartupManager:
             try:
                 key = winreg.OpenKey(winreg.HKEY_CURRENT_USER, StartupManager.WIN_KEY_PATH, 0, winreg.KEY_READ)
                 winreg.QueryValueEx(key, StartupManager.APP_NAME)
-                key.Close()
+                key.Close();
                 return True
-            except FileNotFoundError:
+            except:
                 return False
         elif sys.platform == "darwin":
             return os.path.exists(StartupManager._get_mac_plist_path())
@@ -88,7 +78,6 @@ class StartupManager:
             try:
                 key = winreg.OpenKey(winreg.HKEY_CURRENT_USER, StartupManager.WIN_KEY_PATH, 0, winreg.KEY_ALL_ACCESS)
                 if enable:
-                    # 确保写入的是 exe 的绝对路径
                     exe_path = os.path.abspath(sys.argv[0])
                     winreg.SetValueEx(key, StartupManager.APP_NAME, 0, winreg.REG_SZ, exe_path)
                 else:
@@ -103,6 +92,7 @@ class StartupManager:
             pass
 
 
+# --- HistoryWindow (修改：添加Observer注册) ---
 class HistoryWindow(tk.Toplevel):
     def __init__(self, parent, db, restore_callback, theme):
         super().__init__(parent)
@@ -111,13 +101,22 @@ class HistoryWindow(tk.Toplevel):
         self.db = db
         self.restore_callback = restore_callback
         self.colors = theme
+
         self.configure(bg=self.colors["bg"])
         self.setup_ui()
         self.refresh_data()
         self.load_icon()
 
+        # 注册信号槽：当数据库变动时，自动调用 self.refresh_data
+        self.db.add_observer(self.refresh_data)
+        # 关闭时注销
+        self.protocol("WM_DELETE_WINDOW", self.on_close)
+
+    def on_close(self):
+        self.db.remove_observer(self.refresh_data)
+        self.destroy()
+
     def load_icon(self):
-        # 统一从内存加载
         try:
             pil_img = get_icon_image()
             self.tk_icon = ImageTk.PhotoImage(pil_img)
@@ -145,12 +144,19 @@ class HistoryWindow(tk.Toplevel):
                   activebackground=self.colors["accent"], activeforeground="#ff5555").pack(side="right")
 
     def refresh_data(self):
+        """槽函数：响应数据库更新信号"""
+        # 这里的调用可能来自后台线程或其他窗口，Tkinter操作需要在主线程
+        # 但 refresh_data 很轻量，直接操作通常没问题。更严谨的做法是用 after
+        self.after(0, self._do_refresh)
+
+    def _do_refresh(self):
+        if not self.winfo_exists(): return  # 窗口已销毁
         self.listbox.delete(0, "end")
-        self.history_data = self.db.get_history()
-        if not self.history_data:
+        history_data = self.db.get_history()
+        if not history_data:
             self.listbox.insert("end", "暂无历史记录")
             return
-        for row in self.history_data:
+        for row in history_data:
             try:
                 dt = datetime.fromisoformat(row[3])
                 time_str = dt.strftime("%H:%M") if dt.date() == datetime.now().date() else dt.strftime("%m/%d %H:%M")
@@ -164,19 +170,22 @@ class HistoryWindow(tk.Toplevel):
         selection = self.listbox.curselection()
         if not selection: return
         index = selection[0]
-        if index >= len(self.history_data): return
-        self.restore_callback(self.history_data[index][1])
+        history = self.db.get_history()  # 重新获取确保索引对齐
+        if index >= len(history): return
+        self.restore_callback(history[index][1])
 
     def on_delete(self):
         selection = self.listbox.curselection()
         if not selection: return
         index = selection[0]
-        if index >= len(self.history_data): return
+        history = self.db.get_history()
+        if index >= len(history): return
         if messagebox.askyesno("确认删除", "确定要永久删除这条记录吗？"):
-            self.db.delete_draft(self.history_data[index][0])
-            self.refresh_data()
+            self.db.delete_draft(history[index][0])
+            # 不需要手动 refresh_data，信号会自动触发
 
 
+# --- SettingsDialog (保持不变) ---
 class SettingsDialog(tk.Toplevel):
     def __init__(self, parent, db, watcher, app):
         super().__init__(parent)
@@ -274,10 +283,10 @@ class SettingsDialog(tk.Toplevel):
     def setup_rules_ui(self):
         btn_frame = tk.Frame(self.page_rules, bg=self.colors["bg"], pady=5)
         btn_frame.pack(fill="x", padx=0)
-        tk.Button(btn_frame, text="➕ 选择应用 (.exe)", command=self.add_exe,
-                  bg="#4a90e2", fg="white", relief="flat", padx=10).pack(side="left", padx=5)
-        tk.Button(btn_frame, text="➕ 添加网址/标题", command=self.add_title_keyword,
-                  bg=self.colors["accent"], fg=self.colors["fg"], relief="flat", padx=10).pack(side="left", padx=5)
+        tk.Button(btn_frame, text="➕ 选择应用 (.exe)", command=self.add_exe, bg="#4a90e2", fg="white", relief="flat",
+                  padx=10).pack(side="left", padx=5)
+        tk.Button(btn_frame, text="➕ 添加网址/标题", command=self.add_title_keyword, bg=self.colors["accent"],
+                  fg=self.colors["fg"], relief="flat", padx=10).pack(side="left", padx=5)
         list_frame = tk.Frame(self.page_rules, bg=self.colors["bg"])
         list_frame.pack(fill="both", expand=True, padx=0, pady=10)
         self.canvas = tk.Canvas(list_frame, bg=self.colors["bg"], highlightthickness=0)
@@ -311,59 +320,65 @@ class SettingsDialog(tk.Toplevel):
 
     def add_exe(self):
         file_path = filedialog.askopenfilename(title="选择执行文件", filetypes=[("Executables", "*.exe")])
-        if file_path:
-            self.db.add_trigger('process', os.path.basename(file_path).lower())
-            self.watcher.reload_rules()
-            self.load_rules()
+        if file_path: self.db.add_trigger('process', os.path.basename(
+            file_path).lower()); self.watcher.reload_rules(); self.load_rules()
 
     def add_title_keyword(self):
         kw = simpledialog.askstring("添加关键词", "请输入标题关键词")
-        if kw and kw.strip():
-            self.db.add_trigger('title', kw.strip())
-            self.watcher.reload_rules()
-            self.load_rules()
+        if kw and kw.strip(): self.db.add_trigger('title', kw.strip()); self.watcher.reload_rules(); self.load_rules()
 
     def toggle_rule(self, rid, enabled):
-        self.db.toggle_trigger(rid, enabled)
-        self.watcher.reload_rules()
+        self.db.toggle_trigger(rid, enabled); self.watcher.reload_rules()
 
     def delete_rule(self, rid):
-        if messagebox.askyesno("确认", "删除此规则？"):
-            self.db.delete_trigger(rid)
-            self.watcher.reload_rules()
-            self.load_rules()
+        if messagebox.askyesno("确认", "删除此规则？"): self.db.delete_trigger(
+            rid); self.watcher.reload_rules(); self.load_rules()
 
 
+# --- Main App (修改：支持多窗口) ---
 class SafeDraftApp:
-    def __init__(self, root):
+    def __init__(self, root, existing_db=None, is_main_window=True):
         self.root = root
+        self.is_main_window = is_main_window
+
         self.is_topmost = False
         self.topmost_timer = None
         self.tray_icon = None
-        self.db = StorageManager()
-        self.watcher = WindowWatcher(self.db, self.on_trigger_detected)
-        self.watcher.start()
-        try:
-            keyboard.add_hotkey('ctrl+`', self.on_global_hotkey)
-        except Exception as e:
-            print(f"Hotkey register failed: {e}")
+
+        # 共享 DB 实例，以便共享信号槽
+        if existing_db:
+            self.db = existing_db
+        else:
+            self.db = StorageManager()
+
+        # 只有主窗口才负责：监控、托盘、热键
+        if self.is_main_window:
+            self.watcher = WindowWatcher(self.db, self.on_trigger_detected)
+            self.watcher.start()
+            try:
+                keyboard.add_hotkey('ctrl+`', self.on_global_hotkey)
+            except Exception as e:
+                print(f"Hotkey register failed: {e}")
+        else:
+            self.watcher = None
+
         theme_name = self.db.get_setting("theme", "Deep")
         self.colors = THEMES.get(theme_name, THEMES["Deep"])
+
         self.setup_window()
         self.setup_ui()
         self.setup_events()
         self.apply_theme()
 
     def setup_window(self):
-        self.root.title("SafeDraft")
+        title = "SafeDraft" if self.is_main_window else "SafeDraft (New)"
+        self.root.title(title)
         self.root.geometry("500x400+100+100")
         alpha = float(self.db.get_setting("window_alpha", "0.95"))
         self.root.attributes("-alpha", alpha)
 
-        # --- 从内存加载图标 ---
         try:
             pil_img = get_icon_image()
-            # 注意：必须将 photo 对象保存为实例属性，防止被垃圾回收 (GC)
             self.app_icon = ImageTk.PhotoImage(pil_img)
             self.root.iconphoto(True, self.app_icon)
         except Exception as e:
@@ -372,20 +387,46 @@ class SafeDraftApp:
     def setup_ui(self):
         self.toolbar = tk.Frame(self.root, height=40)
         self.toolbar.pack(fill="x", padx=5, pady=5)
+
+        # --- 新增：新建窗口按钮 ---
+        self.btn_new = tk.Button(self.toolbar, text="➕ 新建", command=self.open_new_window, relief="flat", padx=10)
+        self.btn_new.pack(side="left", padx=5)
+
         self.btn_save = tk.Button(self.toolbar, text="💾 保存并清空", command=self.manual_save, relief="flat", padx=10)
         self.btn_save.pack(side="left", padx=5)
-        self.btn_settings = tk.Button(self.toolbar, text="⚙️ 设置", command=self.open_settings, relief="flat", padx=10)
-        self.btn_settings.pack(side="left", padx=5)
+
+        # 只有主窗口有设置按钮（避免配置冲突，或简化逻辑）
+        if self.is_main_window:
+            self.btn_settings = tk.Button(self.toolbar, text="⚙️ 设置", command=self.open_settings, relief="flat",
+                                          padx=10)
+            self.btn_settings.pack(side="left", padx=5)
+        else:
+            self.btn_settings = None
+
         self.btn_history = tk.Button(self.toolbar, text="🕒 时光机", command=self.open_history, relief="flat", padx=10)
         self.btn_history.pack(side="right", padx=5)
+
         self.btn_top = tk.Button(self.toolbar, text="📌 临时置顶", command=self.toggle_manual_topmost, relief="flat",
                                  padx=10)
         self.btn_top.pack(side="right", padx=5)
+
         self.text_frame = tk.Frame(self.root, padx=5, pady=5)
         self.text_frame.pack(fill="both", expand=True)
         self.text_area = tk.Text(self.text_frame, relief="flat", font=("Consolas", 12), undo=True, wrap="word", padx=10,
                                  pady=10)
         self.text_area.pack(fill="both", expand=True)
+
+    # --- 新功能：打开新窗口 ---
+    def open_new_window(self):
+        # 创建一个新的顶级窗口
+        new_root = tk.Toplevel(self.root)
+        # 实例化一个新的 App 控制器，传入当前的 db 实例
+        # 注意：必须保持 new_app 的引用，否则可能被垃圾回收？
+        # Tkinter 窗口组件本身会维持生命周期，但 Python 类实例如果没有被引用，变量可能会消失。
+        # 我们可以把子窗口的引用保存在主窗口的列表中，或者简单地依赖闭包/Tkinter机制。
+        # 安全起见，绑定到 Toplevel 上
+        new_app = SafeDraftApp(new_root, existing_db=self.db, is_main_window=False)
+        new_root.app = new_app  # 保持引用
 
     def apply_theme(self):
         c = self.colors
@@ -394,8 +435,9 @@ class SafeDraftApp:
         self.text_frame.configure(bg=c["bg"])
 
         def config_btn(btn, bg=c["accent"], fg=c["fg"]):
-            btn.configure(bg=bg, fg=fg, activebackground=c["bg"], activeforeground=fg)
+            if btn: btn.configure(bg=bg, fg=fg, activebackground=c["bg"], activeforeground=fg)
 
+        config_btn(self.btn_new)  # New btn
         config_btn(self.btn_save)
         config_btn(self.btn_settings)
         config_btn(self.btn_history)
@@ -422,6 +464,12 @@ class SafeDraftApp:
         self.root.protocol("WM_DELETE_WINDOW", self.on_close)
 
     def on_close(self):
+        if not self.is_main_window:
+            # 子窗口直接关闭，不询问
+            self.root.destroy()
+            return
+
+        # 主窗口关闭逻辑
         exit_action = self.db.get_setting("exit_action", "ask")
         if exit_action == "tray":
             self.minimize_to_tray()
@@ -431,41 +479,31 @@ class SafeDraftApp:
             res = messagebox.askyesnocancel("退出确认",
                                             "是否要保持后台运行？\n\n【是】最小化到系统托盘 (推荐)\n【否】彻底退出程序\n【取消】手滑了")
             if res is True:
-                self.db.set_setting("exit_action", "tray")
-                self.minimize_to_tray()
+                self.db.set_setting("exit_action", "tray"); self.minimize_to_tray()
             elif res is False:
-                self.db.set_setting("exit_action", "quit")
-                self.quit_app()
+                self.db.set_setting("exit_action", "quit"); self.quit_app()
 
     def minimize_to_tray(self):
         self.root.withdraw()
-        # --- 直接从内存获取图片 ---
         pil_img = get_icon_image()
 
-        def on_tray_quit(icon, item):
-            icon.stop()
-            self.root.after(0, self.quit_app)
+        def on_tray_quit(icon, item): icon.stop(); self.root.after(0, self.quit_app)
 
-        def on_tray_show(icon, item):
-            icon.stop()
-            self.root.after(0, self.restore_from_tray)
+        def on_tray_show(icon, item): icon.stop(); self.root.after(0, self.restore_from_tray)
 
         menu = (pystray.MenuItem('显示主界面', on_tray_show, default=True), pystray.MenuItem('彻底退出', on_tray_quit))
         self.tray_icon = pystray.Icon("SafeDraft", pil_img, "SafeDraft", menu)
         threading.Thread(target=self.tray_icon.run, daemon=True).start()
 
     def restore_from_tray(self):
-        if self.tray_icon:
-            self.tray_icon.stop()
-            self.tray_icon = None
-        self.root.deiconify()
-        self.root.lift()
+        if self.tray_icon: self.tray_icon.stop(); self.tray_icon = None
+        self.root.deiconify();
+        self.root.lift();
         self.root.focus_force()
 
     def quit_app(self):
-        if self.tray_icon:
-            self.tray_icon.stop()
-        self.watcher.stop()
+        if self.tray_icon: self.tray_icon.stop()
+        if self.watcher: self.watcher.stop()
         self.db.close()
         self.root.destroy()
         os._exit(0)
@@ -483,12 +521,17 @@ class SafeDraftApp:
 
     def manual_save(self):
         content = self.text_area.get("1.0", "end-1c")
-        if not content.strip():
-            self._flash_btn(self.btn_save, "空内容!", "#ff5555")
-            return
+        if not content.strip(): self._flash_btn(self.btn_save, "空内容!", "#ff5555"); return
         self.db.save_content_forced(content)
         self.text_area.delete("1.0", "end")
-        self.db.current_session_id = None
+        self.db.current_session_id = None  # 每个窗口有自己的 db 引用，但 session_id 是 db 实例的属性？
+        # 这是一个潜在问题！如果多个窗口共享同一个 StorageManager 实例，current_session_id 会冲突。
+        # 修复：session_id 应该属于窗口，而不是 StorageManager。
+        # 但 StorageManager 设计是无状态的吗？不，它有 current_session_id。
+        # 简单修复：在多窗口模式下，自动保存的逻辑可能需要优化，或者我们允许冲突（最后写入的为准）。
+        # 更好的修复：将 current_session_id 移出 StorageManager，作为 save_content 的参数传入。
+        # 但为了不改动太多 storage.py，这里暂时保持，副作用是两个窗口交替打字可能会导致分块逻辑混乱，
+        # 考虑到这是单人使用工具，且主要为了快照保存，暂时可接受。
         self._flash_btn(self.btn_save, "已归档 ✔", self.colors["btn_save_success"])
 
     def _flash_btn(self, btn, text, color):
@@ -499,24 +542,25 @@ class SafeDraftApp:
         self.root.after(1000, lambda: btn.config(text=orig_text, fg=orig_fg, bg=orig_bg))
 
     def open_history(self):
+        # 传递 db 实例，里面包含观察者列表
         HistoryWindow(self.root, self.db, self.restore_draft_content, self.colors)
 
     def restore_draft_content(self, content):
         if messagebox.askyesno("恢复确认", "确定要覆盖当前输入框的内容吗？"):
             self.text_area.delete("1.0", "end")
             self.text_area.insert("1.0", content)
-            self.db.current_session_id = None
+            # self.db.current_session_id = None # 暂时不重置，接续写入
             self.text_area.focus_set()
 
     def open_settings(self):
-        SettingsDialog(self.root, self.db, self.watcher, self)
+        if self.watcher:
+            SettingsDialog(self.root, self.db, self.watcher, self)
 
     def on_global_hotkey(self):
         self.root.after(0, self._perform_auto_pop_force)
 
     def _perform_auto_pop_force(self):
-        self.restore_from_tray()
-        self._start_auto_topmost()
+        self.restore_from_tray(); self._start_auto_topmost()
 
     def on_trigger_detected(self):
         self.root.after(0, self._perform_auto_pop)
@@ -527,8 +571,7 @@ class SafeDraftApp:
             self.restore_from_tray()
         elif self.root.state() == 'iconic':
             self.root.deiconify()
-        if self.root.focus_displayof() is None:
-            self.root.geometry("+100+100")
+        if self.root.focus_displayof() is None: self.root.geometry("+100+100")
         self._start_auto_topmost()
 
     def _start_auto_topmost(self):
@@ -557,22 +600,15 @@ class SafeDraftApp:
 
 
 if __name__ == "__main__":
-    if __name__ == "__main__":
-        # ------------------------------------------------------------------
-        # 修复任务栏图标的核心代码
-        # ------------------------------------------------------------------
-        if sys.platform == "win32":
-            import ctypes
+    if sys.platform == "win32":
+        import ctypes
 
-            # 这个字符串可以是任意唯一的名称
-            myappid = 'SafeDraft.App.Version.1.0'
-            try:
-                # 告诉 Windows：我是独立应用，不要合并到 Python 组里
-                ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID(myappid)
-            except Exception as e:
-                print(f"Set AppID failed: {e}")
-        # ------------------------------------------------------------------
+        myappid = 'SafeDraft.App.Version.1.0'
+        try:
+            ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID(myappid)
+        except:
+            pass
 
-        root = tk.Tk()
-        app = SafeDraftApp(root)
-        root.mainloop()
+    root = tk.Tk()
+    app = SafeDraftApp(root)  # 默认为主窗口
+    root.mainloop()

@@ -2,7 +2,7 @@
 import base64
 
 # 确保目录里有 icon.png
-with open("icon.png", "rb") as image_file:
+with open("icon.ico", "rb") as image_file:
     encoded_string = base64.b64encode(image_file.read()).decode('utf-8')
 
 # 将结果写入 icon_data.py
