@@ -1,17 +1,14 @@
-# 通用
-psutil>=5.9.0
-keyboard>=0.13.5
-pystray>=0.19.5
-Pillow>=10.0.0
-ordered-set
-zstandard
-
-# Windows 专用
-pywin32>=306; sys_platform == 'win32'
-
 # Mac 专用
 pyobjc-framework-Quartz; sys_platform == 'darwin'
 pyobjc-framework-Cocoa; sys_platform == 'darwin'
 
-# 打包
-nuitka>=2.0
+
+keyboard==0.13.5
+Nuitka==2.8.6
+ordered-set==4.1.0
+pillow==12.0.0
+psutil==7.1.3
+pystray==0.19.5
+pywin32==311
+six==1.17.0
+zstandard==0.25.0
