@@ -92,12 +92,12 @@ class StartupManager:
             pass
 
 
-# --- HistoryWindow (修改：添加Observer注册) ---
+# --- HistoryWindow (修改：增加搜索栏) ---
 class HistoryWindow(tk.Toplevel):
     def __init__(self, parent, db, restore_callback, theme):
         super().__init__(parent)
         self.title("时光机 - 历史归档")
-        self.geometry("400x550")
+        self.geometry("400x600")
         self.db = db
         self.restore_callback = restore_callback
         self.colors = theme
@@ -107,9 +107,7 @@ class HistoryWindow(tk.Toplevel):
         self.refresh_data()
         self.load_icon()
 
-        # 注册信号槽：当数据库变动时，自动调用 self.refresh_data
         self.db.add_observer(self.refresh_data)
-        # 关闭时注销
         self.protocol("WM_DELETE_WINDOW", self.on_close)
 
     def on_close(self):
@@ -125,10 +123,29 @@ class HistoryWindow(tk.Toplevel):
             pass
 
     def setup_ui(self):
-        lbl = tk.Label(self, text="双击记录可恢复 | 选中可删除", bg=self.colors["bg"], fg="#888888", pady=10)
+        # 1. 顶部说明
+        lbl = tk.Label(self, text="双击记录可恢复 | 选中可删除", bg=self.colors["bg"], fg="#888888", pady=5)
         lbl.pack(side="top", fill="x")
+
+        # 2. 搜索框区域 (新增)
+        search_frame = tk.Frame(self, bg=self.colors["bg"], pady=5, padx=10)
+        search_frame.pack(side="top", fill="x")
+
+        tk.Label(search_frame, text="🔍", bg=self.colors["bg"], fg="#888888").pack(side="left")
+
+        self.search_var = tk.StringVar()
+        # 监听输入变化，实时过滤
+        self.search_var.trace("w", self.on_search_change)
+
+        self.entry_search = tk.Entry(search_frame, textvariable=self.search_var,
+                                     bg=self.colors["list_bg"], fg=self.colors["list_fg"],
+                                     relief="flat", insertbackground=self.colors["list_fg"])
+        self.entry_search.pack(side="left", fill="x", expand=True, padx=5)
+
+        # 3. 列表区域
         frame = tk.Frame(self, bg=self.colors["bg"])
-        frame.pack(fill="both", expand=True, padx=10, pady=(0, 5))
+        frame.pack(fill="both", expand=True, padx=10, pady=(5, 5))
+
         self.scrollbar = ttk.Scrollbar(frame, orient="vertical")
         self.listbox = tk.Listbox(frame, bg=self.colors["list_bg"], fg=self.colors["list_fg"],
                                   relief="flat", highlightthickness=0, selectbackground="#4a90e2",
@@ -137,31 +154,43 @@ class HistoryWindow(tk.Toplevel):
         self.scrollbar.pack(side="right", fill="y")
         self.listbox.pack(side="left", fill="both", expand=True)
         self.listbox.bind("<Double-Button-1>", self.on_double_click)
+
+        # 4. 底部按钮
         btn_frame = tk.Frame(self, bg=self.colors["bg"], pady=10)
         btn_frame.pack(side="bottom", fill="x", padx=10)
         tk.Button(btn_frame, text="🗑️ 删除选中", command=self.on_delete,
                   bg=self.colors["bg"], fg="#ff5555", relief="flat",
                   activebackground=self.colors["accent"], activeforeground="#ff5555").pack(side="right")
 
+    def on_search_change(self, *args):
+        """搜索框内容变化回调"""
+        self.refresh_data()
+
     def refresh_data(self):
-        """槽函数：响应数据库更新信号"""
-        # 这里的调用可能来自后台线程或其他窗口，Tkinter操作需要在主线程
-        # 但 refresh_data 很轻量，直接操作通常没问题。更严谨的做法是用 after
+        """槽函数：响应数据库更新信号或搜索变化"""
         self.after(0, self._do_refresh)
 
     def _do_refresh(self):
-        if not self.winfo_exists(): return  # 窗口已销毁
+        if not self.winfo_exists(): return
+
+        # 获取当前搜索关键词
+        keyword = self.search_var.get().strip()
+
         self.listbox.delete(0, "end")
-        history_data = self.db.get_history()
+        # 传入 keyword 进行过滤
+        history_data = self.db.get_history(keyword)
+
         if not history_data:
-            self.listbox.insert("end", "暂无历史记录")
+            display_text = "未找到相关记录" if keyword else "暂无历史记录"
+            self.listbox.insert("end", display_text)
             return
+
         for row in history_data:
             try:
                 dt = datetime.fromisoformat(row[3])
                 time_str = dt.strftime("%H:%M") if dt.date() == datetime.now().date() else dt.strftime("%m/%d %H:%M")
                 content = row[1].strip().replace("\n", " ")
-                if len(content) > 20: content = content[:20] + "..."
+                if len(content) > 30: content = content[:30] + "..."  # 搜索时显示长一点
                 self.listbox.insert("end", f"[{time_str}] {content}")
             except:
                 pass
@@ -170,7 +199,11 @@ class HistoryWindow(tk.Toplevel):
         selection = self.listbox.curselection()
         if not selection: return
         index = selection[0]
-        history = self.db.get_history()  # 重新获取确保索引对齐
+
+        # 重新获取当前视图下的数据（包含搜索过滤后的）
+        keyword = self.search_var.get().strip()
+        history = self.db.get_history(keyword)
+
         if index >= len(history): return
         self.restore_callback(history[index][1])
 
@@ -178,11 +211,15 @@ class HistoryWindow(tk.Toplevel):
         selection = self.listbox.curselection()
         if not selection: return
         index = selection[0]
-        history = self.db.get_history()
+
+        # 重新获取当前视图下的数据
+        keyword = self.search_var.get().strip()
+        history = self.db.get_history(keyword)
+
         if index >= len(history): return
         if messagebox.askyesno("确认删除", "确定要永久删除这条记录吗？"):
             self.db.delete_draft(history[index][0])
-            # 不需要手动 refresh_data，信号会自动触发
+            # 不需要手动 refresh，db.delete_draft 会触发 notify，进而触发 refresh_data
 
 
 # --- SettingsDialog (保持不变) ---
@@ -335,23 +372,20 @@ class SettingsDialog(tk.Toplevel):
             rid); self.watcher.reload_rules(); self.load_rules()
 
 
-# --- Main App (修改：支持多窗口) ---
+# --- Main App (保持不变) ---
 class SafeDraftApp:
     def __init__(self, root, existing_db=None, is_main_window=True):
         self.root = root
         self.is_main_window = is_main_window
-
         self.is_topmost = False
         self.topmost_timer = None
         self.tray_icon = None
 
-        # 共享 DB 实例，以便共享信号槽
         if existing_db:
             self.db = existing_db
         else:
             self.db = StorageManager()
 
-        # 只有主窗口才负责：监控、托盘、热键
         if self.is_main_window:
             self.watcher = WindowWatcher(self.db, self.on_trigger_detected)
             self.watcher.start()
@@ -364,7 +398,6 @@ class SafeDraftApp:
 
         theme_name = self.db.get_setting("theme", "Deep")
         self.colors = THEMES.get(theme_name, THEMES["Deep"])
-
         self.setup_window()
         self.setup_ui()
         self.setup_events()
@@ -376,7 +409,6 @@ class SafeDraftApp:
         self.root.geometry("500x400+100+100")
         alpha = float(self.db.get_setting("window_alpha", "0.95"))
         self.root.attributes("-alpha", alpha)
-
         try:
             pil_img = get_icon_image()
             self.app_icon = ImageTk.PhotoImage(pil_img)
@@ -387,46 +419,31 @@ class SafeDraftApp:
     def setup_ui(self):
         self.toolbar = tk.Frame(self.root, height=40)
         self.toolbar.pack(fill="x", padx=5, pady=5)
-
-        # --- 新增：新建窗口按钮 ---
         self.btn_new = tk.Button(self.toolbar, text="➕ 新建", command=self.open_new_window, relief="flat", padx=10)
         self.btn_new.pack(side="left", padx=5)
-
         self.btn_save = tk.Button(self.toolbar, text="💾 保存并清空", command=self.manual_save, relief="flat", padx=10)
         self.btn_save.pack(side="left", padx=5)
-
-        # 只有主窗口有设置按钮（避免配置冲突，或简化逻辑）
         if self.is_main_window:
             self.btn_settings = tk.Button(self.toolbar, text="⚙️ 设置", command=self.open_settings, relief="flat",
                                           padx=10)
             self.btn_settings.pack(side="left", padx=5)
         else:
             self.btn_settings = None
-
         self.btn_history = tk.Button(self.toolbar, text="🕒 时光机", command=self.open_history, relief="flat", padx=10)
         self.btn_history.pack(side="right", padx=5)
-
         self.btn_top = tk.Button(self.toolbar, text="📌 临时置顶", command=self.toggle_manual_topmost, relief="flat",
                                  padx=10)
         self.btn_top.pack(side="right", padx=5)
-
         self.text_frame = tk.Frame(self.root, padx=5, pady=5)
         self.text_frame.pack(fill="both", expand=True)
         self.text_area = tk.Text(self.text_frame, relief="flat", font=("Consolas", 12), undo=True, wrap="word", padx=10,
                                  pady=10)
         self.text_area.pack(fill="both", expand=True)
 
-    # --- 新功能：打开新窗口 ---
     def open_new_window(self):
-        # 创建一个新的顶级窗口
         new_root = tk.Toplevel(self.root)
-        # 实例化一个新的 App 控制器，传入当前的 db 实例
-        # 注意：必须保持 new_app 的引用，否则可能被垃圾回收？
-        # Tkinter 窗口组件本身会维持生命周期，但 Python 类实例如果没有被引用，变量可能会消失。
-        # 我们可以把子窗口的引用保存在主窗口的列表中，或者简单地依赖闭包/Tkinter机制。
-        # 安全起见，绑定到 Toplevel 上
         new_app = SafeDraftApp(new_root, existing_db=self.db, is_main_window=False)
-        new_root.app = new_app  # 保持引用
+        new_root.app = new_app
 
     def apply_theme(self):
         c = self.colors
@@ -437,7 +454,7 @@ class SafeDraftApp:
         def config_btn(btn, bg=c["accent"], fg=c["fg"]):
             if btn: btn.configure(bg=bg, fg=fg, activebackground=c["bg"], activeforeground=fg)
 
-        config_btn(self.btn_new)  # New btn
+        config_btn(self.btn_new)
         config_btn(self.btn_save)
         config_btn(self.btn_settings)
         config_btn(self.btn_history)
@@ -464,12 +481,7 @@ class SafeDraftApp:
         self.root.protocol("WM_DELETE_WINDOW", self.on_close)
 
     def on_close(self):
-        if not self.is_main_window:
-            # 子窗口直接关闭，不询问
-            self.root.destroy()
-            return
-
-        # 主窗口关闭逻辑
+        if not self.is_main_window: self.root.destroy(); return
         exit_action = self.db.get_setting("exit_action", "ask")
         if exit_action == "tray":
             self.minimize_to_tray()
@@ -524,14 +536,7 @@ class SafeDraftApp:
         if not content.strip(): self._flash_btn(self.btn_save, "空内容!", "#ff5555"); return
         self.db.save_content_forced(content)
         self.text_area.delete("1.0", "end")
-        self.db.current_session_id = None  # 每个窗口有自己的 db 引用，但 session_id 是 db 实例的属性？
-        # 这是一个潜在问题！如果多个窗口共享同一个 StorageManager 实例，current_session_id 会冲突。
-        # 修复：session_id 应该属于窗口，而不是 StorageManager。
-        # 但 StorageManager 设计是无状态的吗？不，它有 current_session_id。
-        # 简单修复：在多窗口模式下，自动保存的逻辑可能需要优化，或者我们允许冲突（最后写入的为准）。
-        # 更好的修复：将 current_session_id 移出 StorageManager，作为 save_content 的参数传入。
-        # 但为了不改动太多 storage.py，这里暂时保持，副作用是两个窗口交替打字可能会导致分块逻辑混乱，
-        # 考虑到这是单人使用工具，且主要为了快照保存，暂时可接受。
+        self.db.current_session_id = None
         self._flash_btn(self.btn_save, "已归档 ✔", self.colors["btn_save_success"])
 
     def _flash_btn(self, btn, text, color):
@@ -542,19 +547,16 @@ class SafeDraftApp:
         self.root.after(1000, lambda: btn.config(text=orig_text, fg=orig_fg, bg=orig_bg))
 
     def open_history(self):
-        # 传递 db 实例，里面包含观察者列表
         HistoryWindow(self.root, self.db, self.restore_draft_content, self.colors)
 
     def restore_draft_content(self, content):
         if messagebox.askyesno("恢复确认", "确定要覆盖当前输入框的内容吗？"):
             self.text_area.delete("1.0", "end")
             self.text_area.insert("1.0", content)
-            # self.db.current_session_id = None # 暂时不重置，接续写入
             self.text_area.focus_set()
 
     def open_settings(self):
-        if self.watcher:
-            SettingsDialog(self.root, self.db, self.watcher, self)
+        if self.watcher: SettingsDialog(self.root, self.db, self.watcher, self)
 
     def on_global_hotkey(self):
         self.root.after(0, self._perform_auto_pop_force)
@@ -608,7 +610,6 @@ if __name__ == "__main__":
             ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID(myappid)
         except:
             pass
-
     root = tk.Tk()
-    app = SafeDraftApp(root)  # 默认为主窗口
+    app = SafeDraftApp(root)
     root.mainloop()
