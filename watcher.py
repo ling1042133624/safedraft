@@ -1,6 +1,7 @@
 import time
 import threading
 import sys
+import os
 import psutil
 
 # 根据平台导入特定库
@@ -9,9 +10,6 @@ if sys.platform == "win32":
     import win32process
 elif sys.platform == "darwin":
     from Cocoa import NSWorkspace
-    from Quartz import (
-        CGWindowListCopyWindowInfo, kCGWindowListOptionOnScreenOnly, kCGNullWindowID
-    )
 
 
 class WindowWatcher:
@@ -19,7 +17,13 @@ class WindowWatcher:
         self.db_manager = db_manager
         self.callback = callback
         self.running = False
-        self.last_active_window_name = None
+
+        # 记录上一次触发的规则 key
+        self.last_triggered_key = None
+
+        # 获取自身进程 ID，用于过滤自己
+        self.my_pid = os.getpid()
+
         self.lock = threading.Lock()
         self.reload_rules()
 
@@ -42,74 +46,88 @@ class WindowWatcher:
             hwnd = win32gui.GetForegroundWindow()
             title = win32gui.GetWindowText(hwnd).lower()
             _, pid = win32process.GetWindowThreadProcessId(hwnd)
+
+            # --- 核心修复：如果是自己，返回特殊标记 ---
+            if pid == self.my_pid:
+                return None, None, True  # is_self = True
+
             proc_name = psutil.Process(pid).name().lower() if pid > 0 else ""
-            return title, proc_name
+            return title, proc_name, False
         except:
-            return "", ""
+            return "", "", False
 
     def _get_active_window_info_mac(self):
         """Mac 获取前台窗口信息"""
         try:
-            # 1. 获取前台 App 名称 (Process Name)
             active_app = NSWorkspace.sharedWorkspace().frontmostApplication()
-            if not active_app: return "", ""
+            if not active_app: return "", "", False
+
+            pid = active_app.processIdentifier()
+            if pid == self.my_pid:
+                return None, None, True
 
             proc_name = active_app.localizedName().lower()
-
-            # 2. 获取窗口标题 (需要屏幕录制权限，否则可能获取不到或只能获取应用名)
-            # 这里做一个简单的近似，只监控 App 名字，更深度的窗口标题需要 Accessibility API 比较复杂
-            # 简单实现：Mac下主要依靠 App 名称监控
-            title = proc_name  # 默认标题等于应用名
-
-            # 尝试通过 Quartz 获取所有窗口信息找到前台应用的窗口 (可选，性能开销较大)
-            # options = kCGWindowListOptionOnScreenOnly
-            # window_list = CGWindowListCopyWindowInfo(options, kCGNullWindowID)
-            # for window in window_list:
-            #     if window['kCGWindowOwnerPID'] == active_app.processIdentifier():
-            #         title = window.get('kCGWindowName', '').lower()
-            #         break
-
-            return title, proc_name + ".app"  # 模拟 .exe 格式方便统一处理
+            title = proc_name
+            return title, proc_name + ".app", False
         except:
-            return "", ""
+            return "", "", False
 
     def _loop(self):
         while self.running:
             try:
+                is_self = False
                 if sys.platform == "win32":
-                    title, proc_name = self._get_active_window_info_win()
+                    title, proc_name, is_self = self._get_active_window_info_win()
                 elif sys.platform == "darwin":
-                    title, proc_name = self._get_active_window_info_mac()
+                    title, proc_name, is_self = self._get_active_window_info_mac()
                 else:
                     time.sleep(1)
                     continue
 
-                # 简单的去重逻辑，防止同一窗口重复触发
-                current_id = f"{proc_name}|{title}"
-                if current_id != self.last_active_window_name:
-                    self.last_active_window_name = current_id
+                # -----------------------------------------------------------
+                # 核心修复逻辑：
+                # 如果当前活动窗口是 SafeDraft 自己（比如用户正在点取消置顶，或在打字），
+                # 我们【绝对不要】重置 last_triggered_key。
+                # 我们假装什么都没发生，保持“在这个应用之前”的状态。
+                # 这样当用户切回原来的应用时，系统会认为他“从未离开过”。
+                # -----------------------------------------------------------
+                if is_self:
+                    time.sleep(1)
+                    continue
 
-                    matched = False
-                    with self.lock:
-                        # 1. 检查进程名 (Mac下如 "Code.app", "Google Chrome.app")
-                        # 这里的对比需要注意，Mac的应用名通常没有 .exe，我们在上面强行加了 .app 或者你可以只匹配名字
-                        for p_rule in self.process_names:
-                            # 模糊匹配，例如规则是 "word"，实际是 "microsoft word.app"
-                            if p_rule.replace(".exe", "") in proc_name:
-                                matched = True
+                current_match_key = None
+
+                with self.lock:
+                    # 1. 检查进程名
+                    for p_rule in self.process_names:
+                        clean_rule = p_rule.replace(".exe", "")
+                        if clean_rule in proc_name:
+                            current_match_key = f"proc:{clean_rule}"
+                            break
+
+                    # 2. 检查标题
+                    if not current_match_key:
+                        for t_rule in self.title_keywords:
+                            if t_rule in title:
+                                current_match_key = f"title:{t_rule}"
                                 break
 
-                        # 2. 检查标题
-                        if not matched:
-                            for t_rule in self.title_keywords:
-                                if t_rule in title:
-                                    matched = True
-                                    break
-
-                    if matched:
+                # --- 状态机 ---
+                if current_match_key:
+                    # 检测到监控目标
+                    if current_match_key != self.last_triggered_key:
+                        # 是一个新的目标（或者从无关应用切回来的）-> 触发！
                         self.callback()
+                        self.last_triggered_key = current_match_key
+                    else:
+                        # 和上次一样 -> 保持安静，不打扰
+                        pass
+                else:
+                    # 检测到无关应用（比如桌面、网易云）
+                    # 只有这时才重置锁
+                    self.last_triggered_key = None
 
             except Exception as e:
-                print(f"Watcher error: {e}")
+                pass
 
             time.sleep(1)

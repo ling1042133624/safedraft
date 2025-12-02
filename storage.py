@@ -3,14 +3,24 @@ import os
 import sys
 from datetime import datetime, timedelta
 
+# --- 默认触发器配置 (新增 Gemini) ---
 DEFAULT_TRIGGERS = [
+    # AI 网页标题关键词
     ("title", "ChatGPT", 1),
     ("title", "Claude", 1),
     ("title", "DeepSeek", 1),
+    ("title", "Gemini", 1),  # <--- 新增
+    ("title", "Copilot", 1),  # <--- 顺便加上 Copilot
+    ("title", "文心一言", 1),
+    ("title", "通义千问", 1),
+    ("title", "Kimi", 1),
+
+    # 本地应用进程名
     ("process", "winword.exe", 1),
     ("process", "wps.exe", 1),
     ("process", "notepad.exe", 1),
     ("process", "feishu.exe", 1),
+    ("process", "dingtalk.exe", 1),
 ]
 
 
@@ -18,6 +28,7 @@ class StorageManager:
     def __init__(self, db_name="safedraft.db"):
         self.base_path = self.get_real_executable_path()
         self.db_path = os.path.join(self.base_path, db_name)
+
         self.conn = sqlite3.connect(self.db_path, check_same_thread=False)
         self.cursor = self.conn.cursor()
         self._init_db()
@@ -32,18 +43,44 @@ class StorageManager:
             return os.path.dirname(os.path.abspath(__file__))
 
     def _init_db(self):
-        self.cursor.execute(
-            'CREATE TABLE IF NOT EXISTS drafts (id INTEGER PRIMARY KEY AUTOINCREMENT, content TEXT, created_at TIMESTAMP, last_updated_at TIMESTAMP)')
-        self.cursor.execute(
-            'CREATE TABLE IF NOT EXISTS triggers_v2 (id INTEGER PRIMARY KEY AUTOINCREMENT, rule_type TEXT, value TEXT, enabled INTEGER DEFAULT 1, UNIQUE(rule_type, value))')
-        self.cursor.execute('CREATE TABLE IF NOT EXISTS settings (key TEXT PRIMARY KEY, value TEXT)')
-        self.cursor.execute('SELECT count(*) FROM triggers_v2')
-        if self.cursor.fetchone()[0] == 0:
-            self.cursor.executemany('INSERT OR IGNORE INTO triggers_v2 (rule_type, value, enabled) VALUES (?, ?, ?)',
-                                    DEFAULT_TRIGGERS)
+        # 1. 建表
+        self.cursor.execute('''
+            CREATE TABLE IF NOT EXISTS drafts (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                content TEXT,
+                created_at TIMESTAMP,
+                last_updated_at TIMESTAMP
+            )
+        ''')
+        self.cursor.execute('''
+            CREATE TABLE IF NOT EXISTS triggers_v2 (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                rule_type TEXT, 
+                value TEXT,
+                enabled INTEGER DEFAULT 1,
+                UNIQUE(rule_type, value)
+            )
+        ''')
+        self.cursor.execute('''
+            CREATE TABLE IF NOT EXISTS settings (
+                key TEXT PRIMARY KEY,
+                value TEXT
+            )
+        ''')
+
+        # 2. 智能补全默认规则 (修复旧数据库没有 Gemini 的问题)
+        # 使用 INSERT OR IGNORE，如果规则已存在则跳过，不存在则插入
+        self.cursor.executemany('''
+            INSERT OR IGNORE INTO triggers_v2 (rule_type, value, enabled) 
+            VALUES (?, ?, ?)
+        ''', DEFAULT_TRIGGERS)
+
+        # 3. 初始化默认设置
         self.cursor.execute('INSERT OR IGNORE INTO settings (key, value) VALUES (?, ?)', ("theme", "Deep"))
+
         self.conn.commit()
 
+    # --- 信号槽 ---
     def add_observer(self, callback):
         if callback not in self._observers: self._observers.append(callback)
 
@@ -57,6 +94,7 @@ class StorageManager:
             except:
                 pass
 
+    # --- 设置 ---
     def get_setting(self, key, default=None):
         self.cursor.execute('SELECT value FROM settings WHERE key = ?', (key,))
         row = self.cursor.fetchone()
@@ -66,6 +104,7 @@ class StorageManager:
         self.cursor.execute('REPLACE INTO settings (key, value) VALUES (?, ?)', (key, value))
         self.conn.commit()
 
+    # --- 草稿保存 ---
     def save_content(self, content):
         if not content.strip(): return
         now = datetime.now()
@@ -120,7 +159,6 @@ class StorageManager:
         self.conn.commit()
         self._notify_observers()
 
-    # --- 修改处：支持 keyword 参数 ---
     def get_history(self, keyword=None):
         if keyword:
             search_term = f"%{keyword}%"
@@ -132,6 +170,7 @@ class StorageManager:
                 'SELECT id, content, created_at, last_updated_at FROM drafts ORDER BY last_updated_at DESC')
         return self.cursor.fetchall()
 
+    # --- 触发器 ---
     def get_all_triggers(self):
         self.cursor.execute('SELECT id, rule_type, value, enabled FROM triggers_v2 ORDER BY rule_type, value')
         return self.cursor.fetchall()
