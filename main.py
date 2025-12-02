@@ -10,7 +10,6 @@ from pynput import keyboard as pk
 # 导入自定义模块
 from storage import StorageManager
 from watcher import WindowWatcher
-# 引入 DEFAULT_FONT_SIZE
 from utils import THEMES, get_icon_image, DEFAULT_FONT_SIZE
 from windows import HistoryWindow, SettingsDialog
 
@@ -104,7 +103,6 @@ class SafeDraftApp:
         self.text_frame = tk.Frame(self.root, padx=5, pady=5)
         self.text_frame.pack(fill="both", expand=True)
 
-        # 应用字体大小
         self.text_area = tk.Text(self.text_frame, relief="flat",
                                  font=("Consolas", self.font_size),
                                  undo=True, wrap="word", padx=10, pady=10)
@@ -146,7 +144,6 @@ class SafeDraftApp:
         except:
             pass
 
-    # --- 新增：实时调整字体 ---
     def set_font_size(self, size):
         try:
             new_size = int(size)
@@ -234,10 +231,10 @@ class SafeDraftApp:
         HistoryWindow(self.root, self.db, self.restore_draft_content, self.colors)
 
     def restore_draft_content(self, content):
-        if messagebox.askyesno("恢复确认", "确定要覆盖当前输入框的内容吗？"):
-            self.text_area.delete("1.0", "end")
-            self.text_area.insert("1.0", content)
-            self.text_area.focus_set()
+        # 移除了这里的确认弹窗，改为直接执行
+        self.text_area.delete("1.0", "end")
+        self.text_area.insert("1.0", content)
+        self.text_area.focus_set()
 
     def open_settings(self):
         if self.watcher:

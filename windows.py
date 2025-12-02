@@ -4,7 +4,7 @@ from tkinter import ttk, messagebox, filedialog, simpledialog
 from datetime import datetime
 from PIL import ImageTk
 
-# 引入 DEFAULT_FONT_SIZE
+# 导入工具模块
 from utils import get_icon_image, StartupManager, DEFAULT_FONT_SIZE
 
 
@@ -17,7 +17,11 @@ class HistoryWindow(tk.Toplevel):
         self.restore_callback = restore_callback
         self.colors = theme
 
-        # 读取当前字体大小配置，用于列表显示
+        # 读取配置：是否快速恢复
+        val = self.db.get_setting("quick_restore", "0")
+        self.quick_restore_var = tk.BooleanVar(value=(val == "1"))
+
+        # 读取字体大小
         try:
             self.font_size = int(self.db.get_setting("font_size", str(DEFAULT_FONT_SIZE)))
         except:
@@ -44,9 +48,11 @@ class HistoryWindow(tk.Toplevel):
             pass
 
     def setup_ui(self):
-        lbl = tk.Label(self, text="双击记录可恢复 | 选中可删除", bg=self.colors["bg"], fg="#888888", pady=5)
+        # 1. 顶部说明
+        lbl = tk.Label(self, text="双击记录恢复 | 选中可删除", bg=self.colors["bg"], fg="#888888", pady=5)
         lbl.pack(side="top", fill="x")
 
+        # 2. 搜索框
         search_frame = tk.Frame(self, bg=self.colors["bg"], pady=5, padx=10)
         search_frame.pack(side="top", fill="x")
         tk.Label(search_frame, text="🔍", bg=self.colors["bg"], fg="#888888").pack(side="left")
@@ -57,13 +63,12 @@ class HistoryWindow(tk.Toplevel):
                                      relief="flat", insertbackground=self.colors["list_fg"])
         self.entry_search.pack(side="left", fill="x", expand=True, padx=5)
 
+        # 3. 列表区域
         frame = tk.Frame(self, bg=self.colors["bg"])
         frame.pack(fill="both", expand=True, padx=10, pady=(5, 5))
         self.scrollbar = ttk.Scrollbar(frame, orient="vertical")
 
-        # 应用字体大小 (稍微比主输入框小一点点，或者保持一致)
         list_font = ("Consolas", max(9, self.font_size - 2))
-
         self.listbox = tk.Listbox(frame, bg=self.colors["list_bg"], fg=self.colors["list_fg"],
                                   relief="flat", highlightthickness=0, selectbackground="#4a90e2",
                                   yscrollcommand=self.scrollbar.set, font=list_font)
@@ -72,11 +77,26 @@ class HistoryWindow(tk.Toplevel):
         self.listbox.pack(side="left", fill="both", expand=True)
         self.listbox.bind("<Double-Button-1>", self.on_double_click)
 
+        # 4. 底部控制区 (新增复选框)
         btn_frame = tk.Frame(self, bg=self.colors["bg"], pady=10)
         btn_frame.pack(side="bottom", fill="x", padx=10)
+
+        # 左侧：快速恢复开关
+        chk_quick = tk.Checkbutton(btn_frame, text="双击直接恢复 (不询问)", variable=self.quick_restore_var,
+                                   bg=self.colors["bg"], fg="#888888", selectcolor=self.colors["accent"],
+                                   activebackground=self.colors["bg"], activeforeground="#888888",
+                                   command=self.on_toggle_quick_restore)
+        chk_quick.pack(side="left")
+
+        # 右侧：删除按钮
         tk.Button(btn_frame, text="🗑️ 删除选中", command=self.on_delete,
                   bg=self.colors["bg"], fg="#ff5555", relief="flat",
                   activebackground=self.colors["accent"], activeforeground="#ff5555").pack(side="right")
+
+    def on_toggle_quick_restore(self):
+        """保存用户偏好"""
+        val = "1" if self.quick_restore_var.get() else "0"
+        self.db.set_setting("quick_restore", val)
 
     def on_search_change(self, *args):
         self.refresh_data()
@@ -110,7 +130,16 @@ class HistoryWindow(tk.Toplevel):
         keyword = self.search_var.get().strip()
         history = self.db.get_history(keyword)
         if index >= len(history): return
-        self.restore_callback(history[index][1])
+
+        content = history[index][1]
+
+        # --- 核心逻辑修改 ---
+        # 如果勾选了“直接恢复”，则直接调用，否则弹窗询问
+        if self.quick_restore_var.get():
+            self.restore_callback(content)
+        else:
+            if messagebox.askyesno("恢复确认", "确定要覆盖当前输入框的内容吗？"):
+                self.restore_callback(content)
 
     def on_delete(self):
         selection = self.listbox.curselection()
@@ -127,7 +156,7 @@ class SettingsDialog(tk.Toplevel):
     def __init__(self, parent, db, watcher, app):
         super().__init__(parent)
         self.title("设置")
-        self.geometry("480x650")  # 稍微调高一点
+        self.geometry("480x650")
         self.db = db
         self.watcher = watcher
         self.app = app
@@ -155,7 +184,7 @@ class SettingsDialog(tk.Toplevel):
             pass
 
     def setup_general_ui(self):
-        # 快捷键提示
+        # 快捷键
         frame_hotkey = tk.Frame(self.page_general, bg=self.colors["bg"], pady=10)
         frame_hotkey.pack(fill="x", padx=20)
         tk.Label(frame_hotkey, text="全局快捷键: Ctrl + ~ (Backtick)",
@@ -195,16 +224,14 @@ class SettingsDialog(tk.Toplevel):
         self.scale_alpha.set(current_alpha)
         self.scale_alpha.pack(side="left", padx=10)
 
-        # --- 新增：字体大小 ---
+        # 字体大小
         frame_font = tk.Frame(self.page_general, bg=self.colors["bg"], pady=10)
         frame_font.pack(fill="x", padx=20)
         tk.Label(frame_font, text="字体大小:", bg=self.colors["bg"], fg=self.colors["fg"]).pack(side="left")
-
         try:
             current_font_size = int(self.db.get_setting("font_size", str(DEFAULT_FONT_SIZE)))
         except:
             current_font_size = DEFAULT_FONT_SIZE
-
         self.scale_font = tk.Scale(frame_font, from_=8, to=30, resolution=1, orient="horizontal",
                                    bg=self.colors["bg"], fg=self.colors["fg"], highlightthickness=0,
                                    activebackground=self.colors["accent"], bd=0, length=200,
@@ -212,7 +239,7 @@ class SettingsDialog(tk.Toplevel):
         self.scale_font.set(current_font_size)
         self.scale_font.pack(side="left", padx=10)
 
-        # 退出习惯
+        # 退出偏好
         frame_exit = tk.Frame(self.page_general, bg=self.colors["bg"], pady=20)
         frame_exit.pack(fill="x", padx=20)
         tk.Label(frame_exit, text="关闭主窗口时:", bg=self.colors["bg"], fg=self.colors["fg"]).pack(side="left")
@@ -231,27 +258,25 @@ class SettingsDialog(tk.Toplevel):
             messagebox.showerror("错误", str(e))
 
     def change_theme(self, event):
-        theme_name = self.combo_theme.get()
+        theme_name = self.combo_theme.get();
         self.db.set_setting("theme", theme_name)
         self.app.switch_theme(theme_name)
-        self.colors = self.app.colors
+        self.colors = self.app.colors;
         self.configure(bg=self.colors["bg"])
 
     def on_alpha_change(self, value):
-        self.db.set_setting("window_alpha", value)
+        self.db.set_setting("window_alpha", value);
         self.app.set_window_alpha(value)
 
     def on_font_change(self, value):
-        """实时修改字体大小"""
-        self.db.set_setting("font_size", value)
+        self.db.set_setting("font_size", value);
         self.app.set_font_size(value)
 
     def change_exit_pref(self, event):
-        display_val = self.combo_exit.get()
+        display_val = self.combo_exit.get();
         db_val = self.exit_map_rev.get(display_val, "ask")
         self.db.set_setting("exit_action", db_val)
 
-    # 监控规则相关方法保持不变
     def setup_rules_ui(self):
         btn_frame = tk.Frame(self.page_rules, bg=self.colors["bg"], pady=5)
         btn_frame.pack(fill="x", padx=0)
