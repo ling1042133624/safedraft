@@ -3,19 +3,16 @@ import os
 import sys
 from datetime import datetime, timedelta
 
-# --- 默认触发器配置 (新增 Gemini) ---
+# 默认触发器配置
 DEFAULT_TRIGGERS = [
-    # AI 网页标题关键词
     ("title", "ChatGPT", 1),
     ("title", "Claude", 1),
     ("title", "DeepSeek", 1),
-    ("title", "Gemini", 1),  # <--- 新增
-    ("title", "Copilot", 1),  # <--- 顺便加上 Copilot
+    ("title", "Gemini", 1),
+    ("title", "Copilot", 1),
     ("title", "文心一言", 1),
     ("title", "通义千问", 1),
     ("title", "Kimi", 1),
-
-    # 本地应用进程名
     ("process", "winword.exe", 1),
     ("process", "wps.exe", 1),
     ("process", "notepad.exe", 1),
@@ -68,14 +65,21 @@ class StorageManager:
             )
         ''')
 
-        # 2. 智能补全默认规则 (修复旧数据库没有 Gemini 的问题)
-        # 使用 INSERT OR IGNORE，如果规则已存在则跳过，不存在则插入
-        self.cursor.executemany('''
-            INSERT OR IGNORE INTO triggers_v2 (rule_type, value, enabled) 
-            VALUES (?, ?, ?)
-        ''', DEFAULT_TRIGGERS)
+        # ------------------------------------------------------------------
+        # 修复逻辑：先检查表里有没有数据
+        # 只有当表是空的（新用户或清空了所有规则）时，才写入默认规则。
+        # 这样可以防止用户删除的默认规则被“复活”。
+        # ------------------------------------------------------------------
+        self.cursor.execute('SELECT count(*) FROM triggers_v2')
+        count = self.cursor.fetchone()[0]
 
-        # 3. 初始化默认设置
+        if count == 0:
+            self.cursor.executemany('''
+                INSERT OR IGNORE INTO triggers_v2 (rule_type, value, enabled) 
+                VALUES (?, ?, ?)
+            ''', DEFAULT_TRIGGERS)
+        # ------------------------------------------------------------------
+
         self.cursor.execute('INSERT OR IGNORE INTO settings (key, value) VALUES (?, ?)', ("theme", "Deep"))
 
         self.conn.commit()
