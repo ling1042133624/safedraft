@@ -247,6 +247,13 @@ class SafeDraftApp:
         self.restore_from_tray(); self._start_auto_topmost()
 
     def on_trigger_detected(self):
+        """Watcher 发现目标后的回调"""
+        # --- 新增：检查总开关 ---
+        master_switch = self.db.get_setting("master_monitor", "1")
+        if master_switch == "0":
+            return  # 总开关关闭，忽略自动弹出
+        # ----------------------
+
         self.root.after(0, self._perform_auto_pop)
 
     def _perform_auto_pop(self):

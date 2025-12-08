@@ -1,8 +1,8 @@
-import os
 import tkinter as tk
-from tkinter import ttk, messagebox, filedialog, simpledialog
+from tkinter import ttk, messagebox, simpledialog, filedialog
 from datetime import datetime
 from PIL import ImageTk
+import os
 
 # 导入工具模块
 from utils import get_icon_image, StartupManager, DEFAULT_FONT_SIZE
@@ -17,11 +17,9 @@ class HistoryWindow(tk.Toplevel):
         self.restore_callback = restore_callback
         self.colors = theme
 
-        # 读取配置：是否快速恢复
         val = self.db.get_setting("quick_restore", "0")
         self.quick_restore_var = tk.BooleanVar(value=(val == "1"))
 
-        # 读取字体大小
         try:
             self.font_size = int(self.db.get_setting("font_size", str(DEFAULT_FONT_SIZE)))
         except:
@@ -48,11 +46,9 @@ class HistoryWindow(tk.Toplevel):
             pass
 
     def setup_ui(self):
-        # 1. 顶部说明
         lbl = tk.Label(self, text="双击记录恢复 | 选中可删除", bg=self.colors["bg"], fg="#888888", pady=5)
         lbl.pack(side="top", fill="x")
 
-        # 2. 搜索框
         search_frame = tk.Frame(self, bg=self.colors["bg"], pady=5, padx=10)
         search_frame.pack(side="top", fill="x")
         tk.Label(search_frame, text="🔍", bg=self.colors["bg"], fg="#888888").pack(side="left")
@@ -63,7 +59,6 @@ class HistoryWindow(tk.Toplevel):
                                      relief="flat", insertbackground=self.colors["list_fg"])
         self.entry_search.pack(side="left", fill="x", expand=True, padx=5)
 
-        # 3. 列表区域
         frame = tk.Frame(self, bg=self.colors["bg"])
         frame.pack(fill="both", expand=True, padx=10, pady=(5, 5))
         self.scrollbar = ttk.Scrollbar(frame, orient="vertical")
@@ -77,24 +72,20 @@ class HistoryWindow(tk.Toplevel):
         self.listbox.pack(side="left", fill="both", expand=True)
         self.listbox.bind("<Double-Button-1>", self.on_double_click)
 
-        # 4. 底部控制区 (新增复选框)
         btn_frame = tk.Frame(self, bg=self.colors["bg"], pady=10)
         btn_frame.pack(side="bottom", fill="x", padx=10)
 
-        # 左侧：快速恢复开关
         chk_quick = tk.Checkbutton(btn_frame, text="双击直接恢复 (不询问)", variable=self.quick_restore_var,
                                    bg=self.colors["bg"], fg="#888888", selectcolor=self.colors["accent"],
                                    activebackground=self.colors["bg"], activeforeground="#888888",
                                    command=self.on_toggle_quick_restore)
         chk_quick.pack(side="left")
 
-        # 右侧：删除按钮
         tk.Button(btn_frame, text="🗑️ 删除选中", command=self.on_delete,
                   bg=self.colors["bg"], fg="#ff5555", relief="flat",
                   activebackground=self.colors["accent"], activeforeground="#ff5555").pack(side="right")
 
     def on_toggle_quick_restore(self):
-        """保存用户偏好"""
         val = "1" if self.quick_restore_var.get() else "0"
         self.db.set_setting("quick_restore", val)
 
@@ -130,11 +121,7 @@ class HistoryWindow(tk.Toplevel):
         keyword = self.search_var.get().strip()
         history = self.db.get_history(keyword)
         if index >= len(history): return
-
         content = history[index][1]
-
-        # --- 核心逻辑修改 ---
-        # 如果勾选了“直接恢复”，则直接调用，否则弹窗询问
         if self.quick_restore_var.get():
             self.restore_callback(content)
         else:
@@ -239,7 +226,7 @@ class SettingsDialog(tk.Toplevel):
         self.scale_font.set(current_font_size)
         self.scale_font.pack(side="left", padx=10)
 
-        # 退出偏好
+        # 退出习惯
         frame_exit = tk.Frame(self.page_general, bg=self.colors["bg"], pady=20)
         frame_exit.pack(fill="x", padx=20)
         tk.Label(frame_exit, text="关闭主窗口时:", bg=self.colors["bg"], fg=self.colors["fg"]).pack(side="left")
@@ -278,12 +265,29 @@ class SettingsDialog(tk.Toplevel):
         self.db.set_setting("exit_action", db_val)
 
     def setup_rules_ui(self):
+        # 1. 全局开关 (新增)
+        frame_master = tk.Frame(self.page_rules, bg=self.colors["bg"], pady=10)
+        frame_master.pack(fill="x", padx=10)
+        current_master = self.db.get_setting("master_monitor", "1")
+        self.var_master = tk.BooleanVar(value=(current_master == "1"))
+        cb_master = tk.Checkbutton(frame_master, text="启用智能感知 (自动弹出)", variable=self.var_master,
+                                   bg=self.colors["bg"], fg=self.colors["fg"], selectcolor=self.colors["accent"],
+                                   activebackground=self.colors["bg"], activeforeground=self.colors["fg"],
+                                   font=("Arial", 10, "bold"), command=self.toggle_master_monitor)
+        cb_master.pack(anchor="w")
+        tk.Label(frame_master, text="关闭后，软件将不会自动弹出，但快捷键依然可用。",
+                 bg=self.colors["bg"], fg="#888888", font=("Arial", 9)).pack(anchor="w", padx=24)
+        ttk.Separator(self.page_rules, orient="horizontal").pack(fill="x", padx=10, pady=5)
+
+        # 2. 按钮
         btn_frame = tk.Frame(self.page_rules, bg=self.colors["bg"], pady=5)
         btn_frame.pack(fill="x", padx=0)
         tk.Button(btn_frame, text="➕ 选择应用 (.exe)", command=self.add_exe, bg="#4a90e2", fg="white", relief="flat",
                   padx=10).pack(side="left", padx=5)
         tk.Button(btn_frame, text="➕ 添加网址/标题", command=self.add_title_keyword, bg=self.colors["accent"],
                   fg=self.colors["fg"], relief="flat", padx=10).pack(side="left", padx=5)
+
+        # 3. 列表
         list_frame = tk.Frame(self.page_rules, bg=self.colors["bg"])
         list_frame.pack(fill="both", expand=True, padx=0, pady=10)
         self.canvas = tk.Canvas(list_frame, bg=self.colors["bg"], highlightthickness=0)
@@ -295,6 +299,10 @@ class SettingsDialog(tk.Toplevel):
         self.canvas.pack(side="left", fill="both", expand=True)
         self.scrollbar.pack(side="right", fill="y")
         self.load_rules()
+
+    def toggle_master_monitor(self):
+        val = "1" if self.var_master.get() else "0"
+        self.db.set_setting("master_monitor", val)
 
     def load_rules(self):
         for w in self.scrollable_frame.winfo_children(): w.destroy()
