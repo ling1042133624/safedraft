@@ -86,6 +86,11 @@ class SafeDraftApp:
         self.btn_save = tk.Button(self.toolbar, text="💾 保存并清空", command=self.manual_save, relief="flat", padx=10)
         self.btn_save.pack(side="left", padx=5)
 
+        # --- 新增：主界面主动同步按钮 ---
+        self.btn_sync = tk.Button(self.toolbar, text="☁️ 同步", command=self.manual_sync, relief="flat", padx=10)
+        self.btn_sync.pack(side="left", padx=5)
+        # -----------------------------
+
         if self.is_main_window:
             self.btn_settings = tk.Button(self.toolbar, text="⚙️ 设置", command=self.open_settings, relief="flat",
                                           padx=10)
@@ -124,6 +129,7 @@ class SafeDraftApp:
 
         config_btn(self.btn_new)
         config_btn(self.btn_save)
+        config_btn(self.btn_sync)  # 主题配置中加入 sync 按钮
         config_btn(self.btn_settings)
         config_btn(self.btn_history)
 
@@ -219,6 +225,42 @@ class SafeDraftApp:
         self.text_area.delete("1.0", "end")
         self.db.current_session_id = None
         self._flash_btn(self.btn_save, "已归档 ✔", self.colors["btn_save_success"])
+
+    # --- 新增：主动同步逻辑 ---
+    def manual_sync(self):
+        # 1. 检查是否开启
+        if self.db.get_setting("ch_enabled", "0") != "1":
+            messagebox.showinfo("提示", "云同步未开启。\n请前往【设置 -> 云端同步】进行配置。")
+            return
+
+        # 2. UI 变为加载状态
+        orig_text = "☁️ 同步"
+        self.btn_sync.config(text="⏳...", state="disabled")
+
+        # 3. 异步执行，不卡顿界面
+        def _run():
+            try:
+                # 这里我们只执行“拉取”，因为“推送”是自动的
+                count = self.db.ch_manager.pull_and_merge()
+
+                # 回到主线程更新 UI
+                self.root.after(0, lambda: self._on_sync_done(count, orig_text))
+            except Exception as e:
+                self.root.after(0, lambda: self._on_sync_fail(str(e), orig_text))
+
+        threading.Thread(target=_run, daemon=True).start()
+
+    def _on_sync_done(self, count, orig_text):
+        self.btn_sync.config(text=orig_text, state="normal")
+        if count > 0:
+            messagebox.showinfo("同步完成", f"成功从云端拉取了 {count} 条新记录！\n请在“时光机”中查看。")
+        else:
+            messagebox.showinfo("同步完成", "本地已是最新状态。")
+
+    def _on_sync_fail(self, err_msg, orig_text):
+        self.btn_sync.config(text=orig_text, state="normal")
+        messagebox.showerror("同步失败", f"无法连接到云端：\n{err_msg}")
+    # -----------------------
 
     def _flash_btn(self, btn, text, color):
         orig_text = "💾 保存并清空"

@@ -3,6 +3,7 @@ from tkinter import ttk, messagebox, simpledialog, filedialog
 from datetime import datetime
 from PIL import ImageTk
 import os
+import threading
 
 # 导入工具模块
 from utils import get_icon_image, StartupManager, DEFAULT_FONT_SIZE
@@ -46,8 +47,18 @@ class HistoryWindow(tk.Toplevel):
             pass
 
     def setup_ui(self):
-        lbl = tk.Label(self, text="双击记录恢复 | 选中可删除", bg=self.colors["bg"], fg="#888888", pady=5)
-        lbl.pack(side="top", fill="x")
+        # --- 修改：顶部增加云端拉取按钮 ---
+        top_bar = tk.Frame(self, bg=self.colors["bg"], pady=5)
+        top_bar.pack(side="top", fill="x", padx=10)
+
+        lbl = tk.Label(top_bar, text="双击记录恢复 | 选中可删除", bg=self.colors["bg"], fg="#888888")
+        lbl.pack(side="left")
+
+        # 新增按钮：☁️ 拉取
+        btn_pull = tk.Button(top_bar, text="☁️ 拉取云端", command=self.on_pull_cloud,
+                             bg=self.colors["accent"], fg=self.colors["fg"], relief="flat", font=("Arial", 9))
+        btn_pull.pack(side="right")
+        # --------------------------------
 
         search_frame = tk.Frame(self, bg=self.colors["bg"], pady=5, padx=10)
         search_frame.pack(side="top", fill="x")
@@ -84,6 +95,24 @@ class HistoryWindow(tk.Toplevel):
         tk.Button(btn_frame, text="🗑️ 删除选中", command=self.on_delete,
                   bg=self.colors["bg"], fg="#ff5555", relief="flat",
                   activebackground=self.colors["accent"], activeforeground="#ff5555").pack(side="right")
+
+    # --- 新增：云端拉取回调 ---
+    def on_pull_cloud(self):
+        if messagebox.askyesno("确认", "将从 ClickHouse 拉取所有记录并合并到本地，可能需要几秒钟。\n\n继续吗？"):
+            try:
+                def run_pull():
+                    try:
+                        count = self.db.ch_manager.pull_and_merge()
+                        self.after(0, lambda: messagebox.showinfo("完成",
+                                                                  f"同步成功！\n新增了 {count} 条本地未记录的草稿。"))
+                        self.after(0, self.refresh_data)
+                    except Exception as e:
+                        self.after(0, lambda: messagebox.showerror("错误", f"同步失败: {str(e)}"))
+
+                threading.Thread(target=run_pull, daemon=True).start()
+
+            except Exception as e:
+                messagebox.showerror("错误", str(e))
 
     def on_toggle_quick_restore(self):
         val = "1" if self.quick_restore_var.get() else "0"
@@ -155,9 +184,17 @@ class SettingsDialog(tk.Toplevel):
         style.configure("TNotebook.Tab", background=self.colors["accent"], foreground="black")
         self.notebook = ttk.Notebook(self)
         self.notebook.pack(fill="both", expand=True, padx=10, pady=10)
+
         self.page_rules = tk.Frame(self.notebook, bg=self.colors["bg"])
         self.notebook.add(self.page_rules, text=" 监控规则 ")
         self.setup_rules_ui()
+
+        # --- 新增 Tab 2: 云端同步 ---
+        self.page_cloud = tk.Frame(self.notebook, bg=self.colors["bg"])
+        self.notebook.add(self.page_cloud, text=" ☁️ 云端同步 ")
+        self.setup_cloud_ui()
+        # ---------------------------
+
         self.page_general = tk.Frame(self.notebook, bg=self.colors["bg"])
         self.notebook.add(self.page_general, text=" 常规设置 ")
         self.setup_general_ui()
@@ -169,6 +206,104 @@ class SettingsDialog(tk.Toplevel):
             self.iconphoto(True, self.tk_icon)
         except:
             pass
+
+    # --- 新增：云端设置 UI ---
+    def setup_cloud_ui(self):
+        f = tk.Frame(self.page_cloud, bg=self.colors["bg"], padx=20, pady=20)
+        f.pack(fill="both", expand=True)
+
+        tk.Label(f, text="配置 ClickHouse 实现多端同步", bg=self.colors["bg"], fg="#4a90e2",
+                 font=("Arial", 11, "bold")).pack(anchor="w", pady=(0, 10))
+
+        # 启用开关
+        self.var_ch_enabled = tk.BooleanVar(value=(self.db.get_setting("ch_enabled", "0") == "1"))
+        cb = tk.Checkbutton(f, text="启用自动同步 (5秒防抖)", variable=self.var_ch_enabled,
+                            bg=self.colors["bg"], fg=self.colors["fg"], selectcolor=self.colors["accent"],
+                            activebackground=self.colors["bg"], activeforeground=self.colors["fg"],
+                            command=self.save_cloud_settings)
+        cb.pack(anchor="w", pady=(0, 10))
+
+        # 表单区域
+        grid_frame = tk.Frame(f, bg=self.colors["bg"])
+        grid_frame.pack(fill="x")
+
+        self.entries = {}
+        fields = [
+            ("Host (地址)", "ch_host", "play.clickhouse.com"),
+            ("Port (端口)", "ch_port", "9000"),
+            ("Database (库名)", "ch_database", "default"),
+            ("User (用户)", "ch_user", "default"),
+            ("Password (密码)", "ch_password", "")
+        ]
+
+        for idx, (label_text, key, default_val) in enumerate(fields):
+            tk.Label(grid_frame, text=label_text, bg=self.colors["bg"], fg=self.colors["fg"]).grid(row=idx, column=0,
+                                                                                                   sticky="w", pady=5)
+            val = self.db.get_setting(key, default_val)
+            if key == "ch_password":
+                entry = tk.Entry(grid_frame, show="*", bg=self.colors["list_bg"], fg=self.colors["list_fg"],
+                                 insertbackground=self.colors["fg"])
+            else:
+                entry = tk.Entry(grid_frame, bg=self.colors["list_bg"], fg=self.colors["list_fg"],
+                                 insertbackground=self.colors["fg"])
+            entry.insert(0, val)
+            entry.grid(row=idx, column=1, sticky="ew", padx=10, pady=5)
+            self.entries[key] = entry
+
+        grid_frame.columnconfigure(1, weight=1)
+
+        # 按钮区
+        btn_frame = tk.Frame(f, bg=self.colors["bg"], pady=20)
+        btn_frame.pack(fill="x")
+
+        tk.Button(btn_frame, text="测试连接", command=self.test_cloud_conn,
+                  bg=self.colors["accent"], fg=self.colors["fg"], relief="flat", padx=10).pack(side="left")
+
+        # --- 新增：历史推送按钮 ---
+        tk.Button(btn_frame, text="⬆️ 推送本地历史", command=self.on_push_history,
+                  bg="#e67e22", fg="white", relief="flat", padx=10).pack(side="left", padx=10)
+        # ------------------------
+
+        tk.Button(btn_frame, text="保存配置", command=self.save_cloud_settings,
+                  bg="#4a90e2", fg="white", relief="flat", padx=15).pack(side="right")
+
+    def save_cloud_settings(self):
+        # 保存所有输入框
+        for key, entry in self.entries.items():
+            self.db.set_setting(key, entry.get().strip())
+        # 保存开关
+        self.db.set_setting("ch_enabled", "1" if self.var_ch_enabled.get() else "0")
+        messagebox.showinfo("提示", "配置已保存。")
+
+    def test_cloud_conn(self):
+        # 先临时保存一下配置以便测试使用最新的值
+        for key, entry in self.entries.items():
+            self.db.set_setting(key, entry.get().strip())
+
+        success, msg = self.db.ch_manager.test_connection()
+        if success:
+            messagebox.showinfo("成功", msg)
+        else:
+            messagebox.showerror("失败", msg)
+
+    # --- 新增：推送历史回调 ---
+    def on_push_history(self):
+        # 1. 再次确认 (防止误点)
+        if not messagebox.askyesno("确认迁移",
+                                   "这将把本地所有的历史记录上传到 ClickHouse。\n"
+                                   "建议仅在初次配置时使用，重复操作可能导致云端数据重复。\n\n"
+                                   "确定要开始吗？"):
+            return
+
+        # 2. 异步执行
+        def _run():
+            try:
+                count = self.db.ch_manager.push_all_history()
+                self.after(0, lambda: messagebox.showinfo("成功", f"已成功推送 {count} 条历史记录到云端！"))
+            except Exception as e:
+                self.after(0, lambda: messagebox.showerror("失败", f"推送失败: {str(e)}"))
+
+        threading.Thread(target=_run, daemon=True).start()
 
     def setup_general_ui(self):
         # 快捷键
@@ -265,7 +400,7 @@ class SettingsDialog(tk.Toplevel):
         self.db.set_setting("exit_action", db_val)
 
     def setup_rules_ui(self):
-        # 1. 全局开关 (新增)
+        # 1. 全局开关
         frame_master = tk.Frame(self.page_rules, bg=self.colors["bg"], pady=10)
         frame_master.pack(fill="x", padx=10)
         current_master = self.db.get_setting("master_monitor", "1")
@@ -333,7 +468,8 @@ class SettingsDialog(tk.Toplevel):
         if kw and kw.strip(): self.db.add_trigger('title', kw.strip()); self.watcher.reload_rules(); self.load_rules()
 
     def toggle_rule(self, rid, enabled):
-        self.db.toggle_trigger(rid, enabled); self.watcher.reload_rules()
+        self.db.toggle_trigger(rid, enabled);
+        self.watcher.reload_rules()
 
     def delete_rule(self, rid):
         if messagebox.askyesno("确认", "删除此规则？"): self.db.delete_trigger(

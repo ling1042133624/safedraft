@@ -12,3 +12,5 @@ pystray==0.19.5
 pywin32==311
 six==1.17.0
 zstandard==0.25.0
+
+clickhouse-driver==0.2.6
