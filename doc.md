@@ -89,4 +89,29 @@ python -m nuitka --standalone --windows-disable-console --enable-plugin=tk-inter
 python -m nuitka --standalone --onefile --jobs=8 --windows-disable-console --enable-plugin=tk-inter --enable-plugin=anti-bloat --no-pyi-file --output-filename=SafeDraft.exe main.py
 ```
 
+```
+// 第一次
+python -m nuitka --standalone --onefile --jobs=8 ^
+     --windows-disable-console ^
+     --enable-plugin=tk-inter ^
+     --enable-plugin=anti-bloat ^
+     --lto=yes ^
+     --clean-cache=all ^
+     --no-pyi-file ^
+     --output-filename=SafeDraft.exe ^
+     main.py
+```
+
+```angular2html
+// 第二次
+python -m nuitka --standalone --onefile --jobs=8 ^
+     --windows-disable-console ^
+     --enable-plugin=tk-inter ^
+     --enable-plugin=anti-bloat ^
+     --lto=yes ^
+     --no-pyi-file ^
+     --output-filename=SafeDraft.exe ^
+     main.py
+```
+
 生成的应用会在 `dist/SafeDraft.app`。

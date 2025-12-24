@@ -3,7 +3,7 @@ from tkinter import messagebox
 import sys
 import os
 import threading
-import pystray
+# import pystray
 from PIL import ImageTk
 from pynput import keyboard as pk
 
@@ -12,7 +12,8 @@ from storage import StorageManager
 from watcher import WindowWatcher
 from utils import THEMES, get_icon_image, DEFAULT_FONT_SIZE
 from windows import HistoryWindow, SettingsDialog
-
+# 在原有导入下添加：
+from notebook import NotebookWindow
 
 class SafeDraftApp:
     def __init__(self, root, existing_db=None, is_main_window=True):
@@ -59,10 +60,13 @@ class SafeDraftApp:
         except Exception as e:
             print(f"Hotkey register failed: {e}")
 
+    # [请替换 SafeDraftApp 类中的这三个方法]
     def setup_window(self):
         title = "SafeDraft" if self.is_main_window else "SafeDraft (New)"
         self.root.title(title)
-        self.root.geometry("550x600+100+100")
+        # --- 修改 1: 宽度调整为 620，高度 600 ---
+        self.root.geometry("620x600+100+100")
+        # -------------------------------------
         try:
             alpha = float(self.db.get_setting("window_alpha", "0.95"))
             self.root.attributes("-alpha", alpha)
@@ -80,30 +84,46 @@ class SafeDraftApp:
         self.toolbar = tk.Frame(self.root, height=40)
         self.toolbar.pack(fill="x", padx=5, pady=5)
 
-        self.btn_new = tk.Button(self.toolbar, text="➕ 新建", command=self.open_new_window, relief="flat", padx=10)
-        self.btn_new.pack(side="left", padx=5)
+        # --- 修改 2: 紧凑布局 (padx 减小) ---
 
-        self.btn_save = tk.Button(self.toolbar, text="💾 保存并清空", command=self.manual_save, relief="flat", padx=10)
-        self.btn_save.pack(side="left", padx=5)
+        # [左侧按钮组]
+        self.btn_new = tk.Button(self.toolbar, text="➕ 新建", command=self.open_new_window, relief="flat", padx=5)
+        self.btn_new.pack(side="left", padx=2)
 
-        # --- 新增：主界面主动同步按钮 ---
-        self.btn_sync = tk.Button(self.toolbar, text="☁️ 同步", command=self.manual_sync, relief="flat", padx=10)
-        self.btn_sync.pack(side="left", padx=5)
-        # -----------------------------
+        self.btn_save = tk.Button(self.toolbar, text="💾 保存并清空", command=self.manual_save, relief="flat",
+                                  padx=5)
+        self.btn_save.pack(side="left", padx=2)
+
+        self.btn_sync = tk.Button(self.toolbar, text="☁️ 同步", command=self.manual_sync, relief="flat", padx=5)
+        self.btn_sync.pack(side="left", padx=2)
 
         if self.is_main_window:
             self.btn_settings = tk.Button(self.toolbar, text="⚙️ 设置", command=self.open_settings, relief="flat",
-                                          padx=10)
-            self.btn_settings.pack(side="left", padx=5)
+                                          padx=5)
+            self.btn_settings.pack(side="left", padx=2)
         else:
             self.btn_settings = None
 
-        self.btn_history = tk.Button(self.toolbar, text="🕒 时光机", command=self.open_history, relief="flat", padx=10)
-        self.btn_history.pack(side="right", padx=5)
+        # [右侧按钮组] (注意：pack side='right' 是从右向左堆叠的)
 
+        # 1. 最右边：临时置顶
         self.btn_top = tk.Button(self.toolbar, text="📌 临时置顶", command=self.toggle_manual_topmost, relief="flat",
-                                 padx=10)
-        self.btn_top.pack(side="right", padx=5)
+                                 padx=5)
+        self.btn_top.pack(side="right", padx=2)
+
+        # 2. 中间：笔记 (在置顶的左边)
+        if self.is_main_window:
+            self.btn_notebook = tk.Button(self.toolbar, text="📓 笔记", command=self.open_notebook, relief="flat",
+                                          padx=5)
+            self.btn_notebook.pack(side="right", padx=2)
+        else:
+            self.btn_notebook = None
+
+        # 3. 左边：时光机 (在笔记的左边)
+        self.btn_history = tk.Button(self.toolbar, text="🕒 历史归档", command=self.open_history, relief="flat",
+                                     padx=5)
+        self.btn_history.pack(side="right", padx=2)
+        # -------------------------------------
 
         self.text_frame = tk.Frame(self.root, padx=5, pady=5)
         self.text_frame.pack(fill="both", expand=True)
@@ -113,32 +133,49 @@ class SafeDraftApp:
                                  undo=True, wrap="word", padx=10, pady=10)
         self.text_area.pack(fill="both", expand=True)
 
-    def open_new_window(self):
-        new_root = tk.Toplevel(self.root)
-        new_app = SafeDraftApp(new_root, existing_db=self.db, is_main_window=False)
-        new_root.app = new_app
-
     def apply_theme(self):
         c = self.colors
         self.root.configure(bg=c["bg"])
         self.toolbar.configure(bg=c["bg"])
         self.text_frame.configure(bg=c["bg"])
 
+        # 辅助函数：统一配置按钮样式
         def config_btn(btn, bg=c["accent"], fg=c["fg"]):
-            if btn: btn.configure(bg=bg, fg=fg, activebackground=c["bg"], activeforeground=fg)
+            if btn:
+                # [核心修复] 必须设置 bg，flat 样式的按钮才会显示背景色块
+                btn.configure(bg=bg, fg=fg, activebackground=c["bg"], activeforeground=fg)
 
+        # 逐个配置所有按钮
         config_btn(self.btn_new)
         config_btn(self.btn_save)
-        config_btn(self.btn_sync)  # 主题配置中加入 sync 按钮
+        config_btn(self.btn_sync)
         config_btn(self.btn_settings)
+
+        # --- 👇 必须加上这一行，笔记按钮才会有样式 👇 ---
+        config_btn(self.btn_notebook)
+        # ---------------------------------------------
+
         config_btn(self.btn_history)
 
+        # 临时置顶按钮的特殊颜色处理
         if self.is_topmost:
             top_color = "#4a90e2" if "强制" in self.btn_top.cget("text") else c["btn_top_active"]
             config_btn(self.btn_top, bg=top_color, fg="white")
         else:
             config_btn(self.btn_top)
+
         self.text_area.configure(bg=c["text_bg"], fg=c["text_fg"], insertbackground=c["insert_bg"])
+
+    # --- 新增方法 ---
+    def open_notebook(self):
+        NotebookWindow(self.root, self.db, self.colors)
+
+
+    def open_new_window(self):
+        new_root = tk.Toplevel(self.root)
+        new_app = SafeDraftApp(new_root, existing_db=self.db, is_main_window=False)
+        new_root.app = new_app
+
 
     def switch_theme(self, theme_name):
         self.colors = THEMES.get(theme_name, THEMES["Deep"])
@@ -184,6 +221,10 @@ class SafeDraftApp:
     def minimize_to_tray(self):
         self.root.withdraw()
         pil_img = get_icon_image()
+
+        # --- 修改：延迟加载 pystray ---
+        import pystray
+        # ----------------------------
 
         def on_tray_quit(icon, item): icon.stop(); self.root.after(0, self.quit_app)
 
@@ -237,16 +278,19 @@ class SafeDraftApp:
         orig_text = "☁️ 同步"
         self.btn_sync.config(text="⏳...", state="disabled")
 
-        # 3. 异步执行，不卡顿界面
+        # 3. 异步执行
         def _run():
             try:
-                # 这里我们只执行“拉取”，因为“推送”是自动的
+                # 执行同步
                 count = self.db.ch_manager.pull_and_merge()
 
-                # 回到主线程更新 UI
+                # 成功回调
                 self.root.after(0, lambda: self._on_sync_done(count, orig_text))
             except Exception as e:
-                self.root.after(0, lambda: self._on_sync_fail(str(e), orig_text))
+                # --- [关键修复] ---
+                # 必须先将异常转为字符串存入局部变量，否则 lambda 执行时 e 已被销毁
+                err_msg = str(e)
+                self.root.after(0, lambda: self._on_sync_fail(err_msg, orig_text))
 
         threading.Thread(target=_run, daemon=True).start()
 

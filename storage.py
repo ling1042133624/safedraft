@@ -5,14 +5,10 @@ import threading
 import uuid
 import time
 from datetime import datetime, timedelta
+import hashlib  # <--- 新增这行
 
-# --- 新增：尝试导入 clickhouse_driver，防止未安装报错 ---
-try:
-    from clickhouse_driver import Client as CHClient
-except ImportError:
-    CHClient = None
 
-# 默认触发器配置 (保持不变)
+# 默认触发器配置
 DEFAULT_TRIGGERS = [
     ("title", "ChatGPT", 1),
     ("title", "Claude", 1),
@@ -30,9 +26,6 @@ DEFAULT_TRIGGERS = [
 ]
 
 
-# --- 新增：ClickHouse 管理器类 ---
-# ... (保留头部的引用)
-
 class ClickHouseManager:
     def __init__(self, db_manager):
         self.local_db = db_manager
@@ -40,51 +33,45 @@ class ClickHouseManager:
         self.machine_id = str(uuid.uuid1())
 
     def get_config(self):
-        return {
-            'host': self.local_db.get_setting("ch_host", ""),
-            'port': self.local_db.get_setting("ch_port", "9000"),
-            'user': self.local_db.get_setting("ch_user", "default"),
-            'password': self.local_db.get_setting("ch_password", ""),
-            'database': self.local_db.get_setting("ch_database", "default"),
-            'enabled': self.local_db.get_setting("ch_enabled", "0") == "1"
-        }
+        with self.local_db.lock:
+            return {
+                'host': self.local_db.get_setting_no_lock("ch_host", ""),
+                'port': self.local_db.get_setting_no_lock("ch_port", "9000"),
+                'user': self.local_db.get_setting_no_lock("ch_user", "default"),
+                'password': self.local_db.get_setting_no_lock("ch_password", ""),
+                'database': self.local_db.get_setting_no_lock("ch_database", "default"),
+                'enabled': self.local_db.get_setting_no_lock("ch_enabled", "0") == "1"
+            }
 
     def connect(self):
-        """建立连接（不吞异常，供外部捕获）"""
-        if not CHClient:
+        # [内存优化] 延迟加载：只有在真正连接时才导入库
+        try:
+            from clickhouse_driver import Client
+        except ImportError:
             raise ImportError("未安装 clickhouse-driver 库")
 
         cfg = self.get_config()
-        if not cfg['host']:
-            raise ValueError("Host 地址为空")
+        if not cfg['host']: raise ValueError("Host 地址为空")
 
         port = int(cfg['port']) if cfg['port'].isdigit() else 9000
-
-        # --- 核心修复：智能判断 SSL ---
-        # 9440 是 ClickHouse 默认的安全原生端口，必须开启 secure=True
         use_secure = (port == 9440)
-        # ---------------------------
 
-        # 每次都实例化一个新的 Client，确保配置即时生效且无状态残留
-        self.client = CHClient(
+        self.client = Client(
             host=cfg['host'],
             port=port,
             user=cfg['user'],
             password=cfg['password'],
             database=cfg['database'],
-            secure=use_secure,  # <--- 关键参数
-            connect_timeout=10,  # <--- 延长超时
+            secure=use_secure,
+            connect_timeout=10,
             send_receive_timeout=10
         )
         return self.client
 
     def init_table(self):
-        """确保云端表结构存在"""
-        # 这里不捕获异常，让异常冒泡给 test_connection
         client = self.connect()
-
-        # 使用 ReplacingMergeTree 自动去重（基于创建时间和内容）
-        sql = """
+        # Drafts 表
+        sql_drafts = """
         CREATE TABLE IF NOT EXISTS drafts (
             uuid String,
             content String,
@@ -94,11 +81,38 @@ class ClickHouseManager:
         ) ENGINE = ReplacingMergeTree()
         ORDER BY (created_at, uuid)
         """
-        client.execute(sql)
+        client.execute(sql_drafts)
+
+        # Folders 表
+        sql_folders = """
+        CREATE TABLE IF NOT EXISTS folders (
+            uuid String,
+            name String,
+            is_deleted UInt8,
+            updated_at DateTime64,
+            machine_id String
+        ) ENGINE = ReplacingMergeTree(updated_at)
+        ORDER BY uuid
+        """
+        client.execute(sql_folders)
+
+        # Notes 表
+        sql_notes = """
+        CREATE TABLE IF NOT EXISTS notes (
+            uuid String,
+            folder_uuid String,
+            title String,
+            content String,
+            is_deleted UInt8,
+            updated_at DateTime64,
+            machine_id String
+        ) ENGINE = ReplacingMergeTree(updated_at)
+        ORDER BY uuid
+        """
+        client.execute(sql_notes)
         return True
 
     def test_connection(self):
-        """测试连接并初始化表（捕获异常并返回具体的错误信息）"""
         try:
             if self.init_table():
                 return True, "连接成功！表结构已验证 ✅"
@@ -106,172 +120,259 @@ class ClickHouseManager:
         except ImportError:
             return False, "缺少依赖库：请运行 pip install clickhouse-driver"
         except Exception as e:
-            # --- 核心修复：返回具体错误字符串 ---
-            error_msg = str(e)
-            if "Connection refused" in error_msg:
-                return False, f"连接被拒绝 (Connection Refused)。\n请检查：\n1. 端口是否正确？(原生端口通常是 9000 或 9440，不是 8123)\n2. 防火墙设置。\n\n详细: {error_msg}"
-            return False, f"连接发生错误:\n{error_msg}"
+            return False, f"连接发生错误:\n{str(e)}"
 
     def push_log(self, content, created_at_iso, updated_at_iso):
-        """异步推送一条记录（Append Only）"""
-        if not CHClient: return
+        # [修复 Bug] 移除对全局 CHClient 的检查，改为检查配置
+        # 如果未开启同步，直接返回，不触发任何导入
         cfg = self.get_config()
         if not cfg['enabled']: return
 
         def _do_push():
             try:
-                client = self.connect()  # 这里可能会抛异常，需要捕获
+                client = self.connect()
                 record_uuid = str(uuid.uuid4())
                 dt_created = datetime.fromisoformat(created_at_iso)
                 dt_updated = datetime.fromisoformat(updated_at_iso)
+
+                # 使用确定性 UUID 逻辑 (可选，防止重复)
+                unique_source = f"{created_at_iso}_{content}"
+                record_uuid = hashlib.md5(unique_source.encode('utf-8')).hexdigest()
 
                 client.execute(
                     'INSERT INTO drafts (uuid, content, created_at, last_updated_at, machine_id) VALUES',
                     [(record_uuid, content, dt_created, dt_updated, self.machine_id)]
                 )
-                print(f"[ClickHouse] Pushed success.")
             except Exception as e:
-                print(f"[ClickHouse] Push Failed: {e}")
+                print(f"[ClickHouse] Push Draft Failed: {e}")
 
         threading.Thread(target=_do_push, daemon=True).start()
 
-    def pull_and_merge(self):
-        """拉取云端所有数据并合并到本地"""
-        # 不捕获异常，直接抛出给 UI 层显示
+    def push_all_history(self, clear_first=False):
+        # [修复 Bug] 推送前确保表存在
+        try:
+            self.init_table()
+        except:
+            pass  # 忽略初始化错误，尝试继续
+
         client = self.connect()
 
-        rows = client.execute(
-            "SELECT content, created_at, last_updated_at FROM drafts ORDER BY last_updated_at DESC LIMIT 1000")
+        if clear_first:
+            try:
+                client.execute('TRUNCATE TABLE drafts')
+                print("[ClickHouse] Cloud drafts table cleared.")
+            except Exception as e:
+                print(f"[ClickHouse] Clear table failed: {e}")
 
-        count_new = 0
-        for content, dt_created, dt_updated in rows:
-            iso_created = dt_created.isoformat()
-            iso_updated = dt_updated.isoformat()
+        # --- A. 推送草稿 ---
+        with self.local_db.lock:
+            self.local_db.cursor.execute('SELECT content, created_at, last_updated_at FROM drafts')
+            rows = self.local_db.cursor.fetchall()
 
-            self.local_db.cursor.execute(
-                'SELECT id FROM drafts WHERE created_at = ? AND content = ?',
-                (iso_created, content)
-            )
-            if not self.local_db.cursor.fetchone():
-                self.local_db.cursor.execute(
-                    'INSERT INTO drafts (content, created_at, last_updated_at) VALUES (?, ?, ?)',
-                    (content, iso_created, iso_updated)
-                )
-                count_new += 1
-
-        self.local_db.conn.commit()
-        return count_new
-
-    # 在 ClickHouseManager 类内部添加此方法
-    def push_all_history(self):
-        """将本地所有 SQLite 历史记录批量推送到 ClickHouse (用于迁移)"""
-        client = self.connect()
-        if not client: raise Exception("无法连接到 ClickHouse")
-
-        # 1. 从本地 SQLite 读取所有数据
-        self.local_db.cursor.execute('SELECT content, created_at, last_updated_at FROM drafts')
-        rows = self.local_db.cursor.fetchall()
-
-        if not rows:
-            return 0
-
-        # 2. 构造批量数据
-        data_to_insert = []
+        data_drafts = []
         for content, c_at, u_at in rows:
             try:
-                # 转换时间格式字符串 -> datetime 对象
-                dt_c = datetime.fromisoformat(c_at)
-                dt_u = datetime.fromisoformat(u_at)
-
-                # 为每条历史记录生成一个新的 UUID
-                # 注意：如果你多次点击推送，ClickHouse 会产生重复数据
-                # (依靠 ReplacingMergeTree 后台去重，或者这里可以做更复杂的排重检查)
-                record_uuid = str(uuid.uuid4())
-
-                data_to_insert.append({
-                    'uuid': record_uuid,
+                unique_source = f"{c_at}_{content}"
+                deterministic_uuid = hashlib.md5(unique_source.encode('utf-8')).hexdigest()
+                data_drafts.append({
+                    'uuid': deterministic_uuid,
                     'content': content,
-                    'created_at': dt_c,
-                    'last_updated_at': dt_u,
+                    'created_at': datetime.fromisoformat(c_at),
+                    'last_updated_at': datetime.fromisoformat(u_at),
                     'machine_id': self.machine_id
                 })
-            except Exception as e:
-                print(f"Skipping bad record: {e}")
+            except:
                 continue
+        if data_drafts:
+            client.execute('INSERT INTO drafts (uuid, content, created_at, last_updated_at, machine_id) VALUES',
+                           data_drafts)
 
-        # 3. 执行批量插入 (Batch Insert)
-        if data_to_insert:
+        # --- B. 推送文件夹 ---
+        with self.local_db.lock:
+            self.local_db.cursor.execute('SELECT uuid, name, is_deleted, updated_at FROM folders')
+            rows_f = self.local_db.cursor.fetchall()
+
+        data_f = []
+        for r in rows_f:
+            try:
+                data_f.append({
+                    'uuid': r[0], 'name': r[1],
+                    'is_deleted': r[2],
+                    'updated_at': datetime.fromisoformat(r[3]),
+                    'machine_id': self.machine_id
+                })
+            except:
+                continue
+        if data_f:
+            client.execute('INSERT INTO folders (uuid, name, is_deleted, updated_at, machine_id) VALUES', data_f)
+
+        # --- C. 推送笔记 ---
+        with self.local_db.lock:
+            self.local_db.cursor.execute('SELECT uuid, folder_uuid, title, content, is_deleted, updated_at FROM notes')
+            rows_n = self.local_db.cursor.fetchall()
+
+        data_n = []
+        for r in rows_n:
+            try:
+                data_n.append({
+                    'uuid': r[0], 'folder_uuid': r[1], 'title': r[2], 'content': r[3],
+                    'is_deleted': r[4],
+                    'updated_at': datetime.fromisoformat(r[5]),
+                    'machine_id': self.machine_id
+                })
+            except:
+                continue
+        if data_n:
             client.execute(
-                'INSERT INTO drafts (uuid, content, created_at, last_updated_at, machine_id) VALUES',
-                data_to_insert
-            )
+                'INSERT INTO notes (uuid, folder_uuid, title, content, is_deleted, updated_at, machine_id) VALUES',
+                data_n)
 
-        return len(data_to_insert)
+        return len(data_drafts) + len(data_f) + len(data_n)
+
+    def pull_and_merge(self):
+        # [修复 Bug] 拉取前确保表存在
+        try:
+            self.init_table()
+        except:
+            pass
+
+        client = self.connect()
+
+        # 1. 拉取草稿
+        rows = client.execute(
+            "SELECT content, created_at, last_updated_at FROM drafts ORDER BY last_updated_at DESC LIMIT 1000")
+        count_drafts = 0
+        with self.local_db.lock:
+            for content, dt_created, dt_updated in rows:
+                iso_created = dt_created.isoformat()
+                iso_updated = dt_updated.isoformat()
+                self.local_db.cursor.execute('SELECT id FROM drafts WHERE created_at = ? AND content = ?',
+                                             (iso_created, content))
+                if not self.local_db.cursor.fetchone():
+                    self.local_db.cursor.execute(
+                        'INSERT INTO drafts (content, created_at, last_updated_at) VALUES (?, ?, ?)',
+                        (content, iso_created, iso_updated))
+                    count_drafts += 1
+            self.local_db.conn.commit()
+
+        # 2. 拉取笔记
+        count_notes = self.pull_notebook_data()
+        return count_drafts + count_notes
+
+    def push_folder_log(self, folder_uuid, name, is_deleted, updated_at_iso):
+        cfg = self.get_config()
+        if not cfg['enabled']: return
+
+        def _do():
+            try:
+                client = self.connect()
+                dt = datetime.fromisoformat(updated_at_iso)
+                client.execute('INSERT INTO folders (uuid, name, is_deleted, updated_at, machine_id) VALUES',
+                               [(folder_uuid, name, 1 if is_deleted else 0, dt, self.machine_id)])
+            except Exception as e:
+                print(f"[ClickHouse] Push Folder Failed: {e}")
+
+        threading.Thread(target=_do, daemon=True).start()
+
+    def push_note_log(self, note_uuid, folder_uuid, title, content, is_deleted, updated_at_iso):
+        cfg = self.get_config()
+        if not cfg['enabled']: return
+
+        def _do():
+            try:
+                client = self.connect()
+                dt = datetime.fromisoformat(updated_at_iso)
+                client.execute(
+                    'INSERT INTO notes (uuid, folder_uuid, title, content, is_deleted, updated_at, machine_id) VALUES',
+                    [(note_uuid, folder_uuid, title, content, 1 if is_deleted else 0, dt, self.machine_id)])
+            except Exception as e:
+                print(f"[ClickHouse] Push Note Failed: {e}")
+
+        threading.Thread(target=_do, daemon=True).start()
+
+    def pull_notebook_data(self):
+        client = self.connect()
+        # 1. 文件夹
+        rows_f = client.execute("SELECT uuid, name, is_deleted, updated_at FROM folders FINAL")
+        for f_uuid, name, is_deleted, dt_updated in rows_f:
+            iso_updated = dt_updated.isoformat()
+            self.local_db.upsert_folder_from_cloud(f_uuid, name, is_deleted, iso_updated)
+
+        # 2. 笔记
+        rows_n = client.execute("SELECT uuid, folder_uuid, title, content, is_deleted, updated_at FROM notes FINAL")
+        for n_uuid, f_uuid, title, content, is_deleted, dt_updated in rows_n:
+            iso_updated = dt_updated.isoformat()
+            self.local_db.upsert_note_from_cloud(n_uuid, f_uuid, title, content, is_deleted, iso_updated)
+
+        return len(rows_f) + len(rows_n)
+
 
 class StorageManager:
     def __init__(self, db_name="safedraft.db"):
         self.base_path = self.get_real_executable_path()
         self.db_path = os.path.join(self.base_path, db_name)
 
+        # --- 核心修复：添加线程锁 ---
+        self.lock = threading.Lock()
+
+        # check_same_thread=False 允许跨线程共享连接，但必须配合 Lock 使用
         self.conn = sqlite3.connect(self.db_path, check_same_thread=False)
         self.cursor = self.conn.cursor()
         self._init_db()
+
         self.current_session_id = None
         self._observers = []
 
-        # --- 新增：ClickHouse 管理器实例 ---
         self.ch_manager = ClickHouseManager(self)
-
-        # --- 新增：防抖定时器 ---
         self.debounce_timer = None
-        self.current_draft_cache = None  # 暂存当前草稿信息
+        self.current_draft_cache = None
 
     def get_real_executable_path(self):
         if getattr(sys, 'frozen', False) or "__compiled__" in globals():
-            candidate = os.path.abspath(sys.argv[0])
-            return os.path.dirname(candidate)
+            return os.path.dirname(os.path.abspath(sys.argv[0]))
         else:
             return os.path.dirname(os.path.abspath(__file__))
 
     def _init_db(self):
-        # (保持原有的建表逻辑不变)
-        self.cursor.execute('''
-            CREATE TABLE IF NOT EXISTS drafts (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                content TEXT,
-                created_at TIMESTAMP,
-                last_updated_at TIMESTAMP
-            )
-        ''')
-        self.cursor.execute('''
-            CREATE TABLE IF NOT EXISTS triggers_v2 (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                rule_type TEXT, 
-                value TEXT,
-                enabled INTEGER DEFAULT 1,
-                UNIQUE(rule_type, value)
-            )
-        ''')
-        self.cursor.execute('''
-            CREATE TABLE IF NOT EXISTS settings (
-                key TEXT PRIMARY KEY,
-                value TEXT
-            )
-        ''')
+        with self.lock:
+            self.cursor.execute('''CREATE TABLE IF NOT EXISTS drafts (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    content TEXT,
+                    created_at TIMESTAMP,
+                    last_updated_at TIMESTAMP
+                )''')
+            self.cursor.execute('''CREATE TABLE IF NOT EXISTS triggers_v2 (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    rule_type TEXT, value TEXT, enabled INTEGER DEFAULT 1,
+                    UNIQUE(rule_type, value)
+                )''')
+            self.cursor.execute('''CREATE TABLE IF NOT EXISTS settings (key TEXT PRIMARY KEY, value TEXT)''')
 
-        self.cursor.execute('SELECT count(*) FROM triggers_v2')
-        count = self.cursor.fetchone()[0]
+            # 笔记系统表
+            self.cursor.execute('''CREATE TABLE IF NOT EXISTS folders (
+                    uuid TEXT PRIMARY KEY,
+                    name TEXT,
+                    is_deleted INTEGER DEFAULT 0,
+                    updated_at TIMESTAMP
+                )''')
+            self.cursor.execute('''CREATE TABLE IF NOT EXISTS notes (
+                    uuid TEXT PRIMARY KEY,
+                    folder_uuid TEXT,
+                    title TEXT,
+                    content TEXT,
+                    is_deleted INTEGER DEFAULT 0,
+                    updated_at TIMESTAMP,
+                    source_draft_id INTEGER
+                )''')
 
-        if count == 0:
-            self.cursor.executemany('''
-                INSERT OR IGNORE INTO triggers_v2 (rule_type, value, enabled) 
-                VALUES (?, ?, ?)
-            ''', DEFAULT_TRIGGERS)
+            self.cursor.execute('SELECT count(*) FROM triggers_v2')
+            if self.cursor.fetchone()[0] == 0:
+                self.cursor.executemany(
+                    'INSERT OR IGNORE INTO triggers_v2 (rule_type, value, enabled) VALUES (?, ?, ?)', DEFAULT_TRIGGERS)
 
-        self.cursor.execute('INSERT OR IGNORE INTO settings (key, value) VALUES (?, ?)', ("theme", "Deep"))
-        self.conn.commit()
+            self.cursor.execute('INSERT OR IGNORE INTO settings (key, value) VALUES (?, ?)', ("theme", "Deep"))
+            self.conn.commit()
 
-    # --- 信号槽 (保持不变) ---
     def add_observer(self, callback):
         if callback not in self._observers: self._observers.append(callback)
 
@@ -279,152 +380,367 @@ class StorageManager:
         if callback in self._observers: self._observers.remove(callback)
 
     def _notify_observers(self):
-        for callback in self._observers:
+        # 通知 UI 更新（在锁外执行，防止 UI 回调反过来请求锁导致死锁）
+        for cb in self._observers:
             try:
-                callback()
+                cb()
             except:
                 pass
 
-    # --- 设置 (保持不变) ---
+    # --- 设置 ---
     def get_setting(self, key, default=None):
+        with self.lock:
+            return self.get_setting_no_lock(key, default)
+
+    def get_setting_no_lock(self, key, default=None):
+        """供内部已加锁的方法调用，避免重入死锁"""
         self.cursor.execute('SELECT value FROM settings WHERE key = ?', (key,))
         row = self.cursor.fetchone()
         return row[0] if row else default
 
     def set_setting(self, key, value):
-        self.cursor.execute('REPLACE INTO settings (key, value) VALUES (?, ?)', (key, value))
-        self.conn.commit()
+        with self.lock:
+            self.cursor.execute('REPLACE INTO settings (key, value) VALUES (?, ?)', (key, value))
+            self.conn.commit()
 
-    # --- 草稿保存 (修改：增加防抖同步) ---
+    # --- Drafts CRUD ---
     def save_content(self, content):
         if not content.strip(): return
         now = datetime.now()
 
-        # 1. 本地逻辑 (保持不变)
-        should_create_new = False
-        if self.current_session_id is None:
-            self.cursor.execute('SELECT id, last_updated_at FROM drafts ORDER BY id DESC LIMIT 1')
-            row = self.cursor.fetchone()
-            if row:
-                last_time = datetime.fromisoformat(row[1])
-                if (now - last_time) > timedelta(minutes=10):
-                    should_create_new = True
+        with self.lock:
+            should_create_new = False
+            if self.current_session_id is None:
+                self.cursor.execute('SELECT id, last_updated_at FROM drafts ORDER BY id DESC LIMIT 1')
+                row = self.cursor.fetchone()
+                if row:
+                    if (now - datetime.fromisoformat(row[1])) > timedelta(minutes=10):
+                        should_create_new = True
+                    else:
+                        self.current_session_id = row[0]
                 else:
-                    self.current_session_id = row[0]
+                    should_create_new = True
+            elif not should_create_new:
+                self.cursor.execute('SELECT last_updated_at FROM drafts WHERE id = ?', (self.current_session_id,))
+                row = self.cursor.fetchone()
+                if row and (now - datetime.fromisoformat(row[0])) > timedelta(minutes=10): should_create_new = True
+
+            created_at_str = now.isoformat()
+            if should_create_new:
+                self.cursor.execute('INSERT INTO drafts (content, created_at, last_updated_at) VALUES (?, ?, ?)',
+                                    (content, now.isoformat(), now.isoformat()))
+                self.current_session_id = self.cursor.lastrowid
             else:
-                should_create_new = True
+                self.cursor.execute('SELECT created_at FROM drafts WHERE id = ?', (self.current_session_id,))
+                row = self.cursor.fetchone()
+                if row: created_at_str = row[0]
+                self.cursor.execute('UPDATE drafts SET content = ?, last_updated_at = ? WHERE id = ?',
+                                    (content, now.isoformat(), self.current_session_id))
 
-        if not should_create_new:
-            self.cursor.execute('SELECT last_updated_at FROM drafts WHERE id = ?', (self.current_session_id,))
-            row = self.cursor.fetchone()
-            if row and (now - datetime.fromisoformat(row[0])) > timedelta(minutes=10): should_create_new = True
+            self.conn.commit()
 
-        created_at_str = now.isoformat()  # 默认值
+        self._notify_observers()
+        self._trigger_debounce_sync(content, created_at_str, now.isoformat())
 
-        if should_create_new:
+    def _trigger_debounce_sync(self, content, c_at, u_at):
+        if self.debounce_timer: self.debounce_timer.cancel()
+        self.current_draft_cache = (content, c_at, u_at)
+        self.debounce_timer = threading.Timer(5.0, lambda: self.ch_manager.push_log(*self.current_draft_cache))
+        self.debounce_timer.start()
+
+    def save_content_forced(self, content):
+        if not content.strip(): return
+        now = datetime.now()
+        with self.lock:
             self.cursor.execute('INSERT INTO drafts (content, created_at, last_updated_at) VALUES (?, ?, ?)',
                                 (content, now.isoformat(), now.isoformat()))
             self.current_session_id = self.cursor.lastrowid
-            created_at_str = now.isoformat()
-        else:
-            # 获取该 session 的创建时间，保持一致性
-            self.cursor.execute('SELECT created_at FROM drafts WHERE id = ?', (self.current_session_id,))
-            row = self.cursor.fetchone()
-            if row: created_at_str = row[0]
-
-            self.cursor.execute('UPDATE drafts SET content = ?, last_updated_at = ? WHERE id = ?',
-                                (content, now.isoformat(), self.current_session_id))
-
-        self.conn.commit()
+            self.conn.commit()
         self._notify_observers()
-
-        # 2. 云端同步 (新增防抖逻辑)
-        self._trigger_debounce_sync(content, created_at_str, now.isoformat())
-
-    def _trigger_debounce_sync(self, content, created_at, updated_at):
-        """5秒防抖，避免频繁请求 ClickHouse"""
-        if self.debounce_timer:
-            self.debounce_timer.cancel()
-
-        # 封装参数
-        self.current_draft_cache = (content, created_at, updated_at)
-
-        # 开启新定时器
-        self.debounce_timer = threading.Timer(5.0, self._perform_sync)
-        self.debounce_timer.start()
-
-    def _perform_sync(self):
-        """定时器触发的实际同步动作"""
-        if self.current_draft_cache:
-            content, c_at, u_at = self.current_draft_cache
-            self.ch_manager.push_log(content, c_at, u_at)
-
-    def save_content_forced(self, content):
-        # (保持不变)
-        if not content.strip(): return
-        now = datetime.now()
-        self.cursor.execute('INSERT INTO drafts (content, created_at, last_updated_at) VALUES (?, ?, ?)',
-                            (content, now.isoformat(), now.isoformat()))
-        self.current_session_id = self.cursor.lastrowid
-        self.conn.commit()
-        self._notify_observers()
-        # 强制保存也触发一次同步
         self.ch_manager.push_log(content, now.isoformat(), now.isoformat())
 
     def save_snapshot(self, content):
-        # (保持不变)
         if not content.strip(): return
         now = datetime.now()
-        self.cursor.execute('INSERT INTO drafts (content, created_at, last_updated_at) VALUES (?, ?, ?)',
-                            (content, now.isoformat(), now.isoformat()))
-        self.conn.commit()
+        with self.lock:
+            self.cursor.execute('INSERT INTO drafts (content, created_at, last_updated_at) VALUES (?, ?, ?)',
+                                (content, now.isoformat(), now.isoformat()))
+            self.conn.commit()
         self._notify_observers()
-        # 快照也同步
         self.ch_manager.push_log(content, now.isoformat(), now.isoformat())
 
-    def delete_draft(self, draft_id):
-        # (保持不变)
-        self.cursor.execute('DELETE FROM drafts WHERE id = ?', (draft_id,))
-        self.conn.commit()
+    def deduplicate_drafts(self):
+        """清理内容重复的草稿，只保留 ID 最大（最新）的一条"""
+        with self.lock:
+            # 使用 SQL 逻辑：删除那些 ID 不在“每个内容分组的最大ID列表”中的记录
+            self.cursor.execute('''
+                DELETE FROM drafts
+                WHERE id NOT IN (
+                    SELECT MAX(id)
+                    FROM drafts
+                    GROUP BY content
+                )
+            ''')
+            deleted_count = self.cursor.rowcount
+            self.conn.commit()
+
         self._notify_observers()
+        return deleted_count
 
     def get_history(self, keyword=None):
-        # (保持不变)
-        if keyword:
-            search_term = f"%{keyword}%"
-            self.cursor.execute(
-                'SELECT id, content, created_at, last_updated_at FROM drafts WHERE content LIKE ? ORDER BY last_updated_at DESC',
-                (search_term,))
-        else:
-            self.cursor.execute(
-                'SELECT id, content, created_at, last_updated_at FROM drafts ORDER BY last_updated_at DESC')
-        return self.cursor.fetchall()
+        with self.lock:
+            if keyword:
+                self.cursor.execute(
+                    'SELECT id, content, created_at, last_updated_at FROM drafts WHERE content LIKE ? ORDER BY last_updated_at DESC',
+                    (f"%{keyword}%",))
+            else:
+                self.cursor.execute(
+                    'SELECT id, content, created_at, last_updated_at FROM drafts ORDER BY last_updated_at DESC')
+            return self.cursor.fetchall()
 
-    # --- 触发器 (保持不变) ---
+    # --- Triggers CRUD ---
     def get_all_triggers(self):
-        self.cursor.execute('SELECT id, rule_type, value, enabled FROM triggers_v2 ORDER BY rule_type, value')
-        return self.cursor.fetchall()
+        with self.lock:
+            self.cursor.execute('SELECT id, rule_type, value, enabled FROM triggers_v2 ORDER BY rule_type, value')
+            return self.cursor.fetchall()
 
     def get_enabled_rules(self):
-        self.cursor.execute('SELECT rule_type, value FROM triggers_v2 WHERE enabled = 1')
-        data = self.cursor.fetchall()
-        rules = {'title': [], 'process': []}
-        for r_type, val in data:
-            if r_type in rules: rules[r_type].append(val.lower())
-        return rules
+        # Watcher 线程调用，务必加锁并使用独立 cursor
+        with self.lock:
+            # 这里为了绝对安全，使用临时 cursor
+            cur = self.conn.cursor()
+            try:
+                cur.execute('SELECT rule_type, value FROM triggers_v2 WHERE enabled = 1')
+                data = cur.fetchall()
+                rules = {'title': [], 'process': []}
+                for r, v in data: rules.setdefault(r, []).append(v.lower())
+                return rules
+            finally:
+                cur.close()
 
-    def add_trigger(self, rule_type, value):
-        self.cursor.execute('INSERT OR IGNORE INTO triggers_v2 (rule_type, value, enabled) VALUES (?, ?, 1)',
-                            (rule_type, value))
-        self.conn.commit()
+    def add_trigger(self, rtype, val):
+        with self.lock:
+            self.cursor.execute('INSERT OR IGNORE INTO triggers_v2 (rule_type, value, enabled) VALUES (?, ?, 1)',
+                                (rtype, val))
+            self.conn.commit()
 
-    def toggle_trigger(self, trigger_id, enabled):
-        self.cursor.execute('UPDATE triggers_v2 SET enabled = ? WHERE id = ?', (1 if enabled else 0, trigger_id))
-        self.conn.commit()
+    def toggle_trigger(self, tid, enabled):
+        with self.lock:
+            self.cursor.execute('UPDATE triggers_v2 SET enabled = ? WHERE id = ?', (1 if enabled else 0, tid))
+            self.conn.commit()
 
-    def delete_trigger(self, trigger_id):
-        self.cursor.execute('DELETE FROM triggers_v2 WHERE id = ?', (trigger_id,))
-        self.conn.commit()
+    def delete_trigger(self, tid):
+        with self.lock:
+            self.cursor.execute('DELETE FROM triggers_v2 WHERE id = ?', (tid,))
+            self.conn.commit()
+
+    # ==========================
+    # 📒 Notebook API
+    # ==========================
+    def get_folders(self):
+        with self.lock:
+            self.cursor.execute('SELECT uuid, name FROM folders WHERE is_deleted = 0 ORDER BY updated_at DESC')
+            return self.cursor.fetchall()
+
+    def create_folder(self, name):
+        fid = str(uuid.uuid4())
+        now = datetime.now().isoformat()
+        with self.lock:
+            self.cursor.execute('INSERT INTO folders (uuid, name, is_deleted, updated_at) VALUES (?, ?, 0, ?)',
+                                (fid, name, now))
+            self.conn.commit()
+        self._notify_observers()
+        self.ch_manager.push_folder_log(fid, name, False, now)
+        return fid
+
+    def rename_folder(self, fid, new_name):
+        now = datetime.now().isoformat()
+        with self.lock:
+            self.cursor.execute('UPDATE folders SET name = ?, updated_at = ? WHERE uuid = ?', (new_name, now, fid))
+            self.conn.commit()
+        self._notify_observers()
+        self.ch_manager.push_folder_log(fid, new_name, False, now)
+
+    def delete_folder(self, fid, delete_children=False):
+        now = datetime.now().isoformat()
+        fname = "deleted"
+
+        # 使用锁，并使用独立 cursor 处理复杂逻辑
+        with self.lock:
+            cur = self.conn.cursor()
+            try:
+                # 1. 删除文件夹
+                cur.execute('UPDATE folders SET is_deleted = 1, updated_at = ? WHERE uuid = ?', (now, fid))
+
+                # 获取名字
+                cur.execute('SELECT name FROM folders WHERE uuid = ?', (fid,))
+                row = cur.fetchone()
+                if row: fname = row[0]
+
+                # 2. 处理子笔记
+                if delete_children:
+                    cur.execute('SELECT uuid, title, content FROM notes WHERE folder_uuid = ? AND is_deleted = 0',
+                                (fid,))
+                    notes_to_del = cur.fetchall()
+
+                    cur.execute('UPDATE notes SET is_deleted = 1, updated_at = ? WHERE folder_uuid = ?', (now, fid))
+
+                    # 记录需要推送的日志
+                    self.logs_to_push = [(n[0], fid, n[1], n[2], True) for n in notes_to_del]
+                else:
+                    cur.execute('SELECT uuid, title, content FROM notes WHERE folder_uuid = ? AND is_deleted = 0',
+                                (fid,))
+                    notes_to_move = cur.fetchall()
+
+                    cur.execute('UPDATE notes SET folder_uuid = "", updated_at = ? WHERE folder_uuid = ?', (now, fid))
+
+                    self.logs_to_push = [(n[0], "", n[1], n[2], False) for n in notes_to_move]
+
+                self.conn.commit()
+            except Exception as e:
+                print(f"Del folder err: {e}")
+            finally:
+                cur.close()
+
+        # 锁释放后再推送日志，防止网络卡顿影响数据库锁
+        self.ch_manager.push_folder_log(fid, fname, True, now)
+        if hasattr(self, 'logs_to_push'):
+            for item in self.logs_to_push:
+                self.ch_manager.push_note_log(item[0], item[1], item[2], item[3], item[4], now)
+            del self.logs_to_push
+
+        self._notify_observers()
+
+    def upsert_folder_from_cloud(self, uuid, name, is_deleted, updated_at):
+        with self.lock:
+            self.cursor.execute('SELECT updated_at FROM folders WHERE uuid = ?', (uuid,))
+            row = self.cursor.fetchone()
+            should_update = False
+            if not row:
+                should_update = True
+            elif datetime.fromisoformat(updated_at) > datetime.fromisoformat(row[0]):
+                should_update = True
+
+            if should_update:
+                self.cursor.execute('REPLACE INTO folders (uuid, name, is_deleted, updated_at) VALUES (?, ?, ?, ?)',
+                                    (uuid, name, is_deleted, updated_at))
+                self.conn.commit()
+
+    def get_notes(self, folder_uuid=None, keyword=None):
+        sql = 'SELECT uuid, title, content, updated_at FROM notes WHERE is_deleted = 0'
+        params = []
+        if folder_uuid:
+            sql += ' AND folder_uuid = ?'
+            params.append(folder_uuid)
+        if keyword:
+            sql += ' AND (title LIKE ? OR content LIKE ?)'
+            params.append(f"%{keyword}%")
+            params.append(f"%{keyword}%")
+        sql += ' ORDER BY updated_at DESC'
+
+        with self.lock:
+            self.cursor.execute(sql, tuple(params))
+            return self.cursor.fetchall()
+
+    def get_note_detail(self, note_uuid):
+        with self.lock:
+            self.cursor.execute('SELECT uuid, folder_uuid, title, content, updated_at FROM notes WHERE uuid = ?',
+                                (note_uuid,))
+            return self.cursor.fetchone()
+
+    def create_note(self, folder_uuid, title, content, source_draft_id=None):
+        nid = str(uuid.uuid4())
+        now = datetime.now().isoformat()
+        with self.lock:
+            self.cursor.execute('''INSERT INTO notes (uuid, folder_uuid, title, content, is_deleted, updated_at, source_draft_id)
+                VALUES (?, ?, ?, ?, 0, ?, ?)''', (nid, folder_uuid, title, content, now, source_draft_id))
+            self.conn.commit()
+        self._notify_observers()
+        self.ch_manager.push_note_log(nid, folder_uuid, title, content, False, now)
+        return nid
+
+    def update_note(self, nid, title, content, folder_uuid=None):
+        now = datetime.now().isoformat()
+        with self.lock:
+            if folder_uuid is None:
+                self.cursor.execute('SELECT folder_uuid FROM notes WHERE uuid = ?', (nid,))
+                row = self.cursor.fetchone()
+                folder_uuid = row[0] if row else ""
+
+            self.cursor.execute(
+                'UPDATE notes SET title = ?, content = ?, folder_uuid = ?, updated_at = ? WHERE uuid = ?',
+                (title, content, folder_uuid, now, nid))
+            self.conn.commit()
+        self._notify_observers()
+        self.ch_manager.push_note_log(nid, folder_uuid, title, content, False, now)
+
+    def delete_note(self, nid):
+        now = datetime.now().isoformat()
+        row = None
+        with self.lock:
+            self.cursor.execute('UPDATE notes SET is_deleted = 1, updated_at = ? WHERE uuid = ?', (now, nid))
+            self.conn.commit()
+            self.cursor.execute('SELECT folder_uuid, title, content FROM notes WHERE uuid = ?', (nid,))
+            row = self.cursor.fetchone()
+
+        self._notify_observers()
+        if row:
+            self.ch_manager.push_note_log(nid, row[0], row[1], row[2], True, now)
+
+    def get_deleted_notes(self):
+        with self.lock:
+            self.cursor.execute(
+                'SELECT uuid, title, content, updated_at FROM notes WHERE is_deleted = 1 ORDER BY updated_at DESC')
+            return self.cursor.fetchall()
+
+    def restore_note(self, nid):
+        now = datetime.now().isoformat()
+        nrow = None
+        target_folder = ""
+
+        with self.lock:
+            # 检查原文件夹
+            self.cursor.execute('SELECT folder_uuid FROM notes WHERE uuid = ?', (nid,))
+            row = self.cursor.fetchone()
+            if row and row[0]:
+                fid = row[0]
+                self.cursor.execute('SELECT is_deleted FROM folders WHERE uuid = ?', (fid,))
+                frow = self.cursor.fetchone()
+                if frow and frow[0] == 0:
+                    target_folder = fid
+
+            # 还原
+            self.cursor.execute('UPDATE notes SET is_deleted = 0, folder_uuid = ?, updated_at = ? WHERE uuid = ?',
+                                (target_folder, now, nid))
+            self.conn.commit()
+
+            self.cursor.execute('SELECT title, content FROM notes WHERE uuid = ?', (nid,))
+            nrow = self.cursor.fetchone()
+
+        self._notify_observers()
+        if nrow:
+            self.ch_manager.push_note_log(nid, target_folder, nrow[0], nrow[1], False, now)
+
+    def hard_delete_note(self, nid):
+        with self.lock:
+            self.cursor.execute('DELETE FROM notes WHERE uuid = ?', (nid,))
+            self.conn.commit()
+        self._notify_observers()
+
+    def upsert_note_from_cloud(self, uuid, folder_uuid, title, content, is_deleted, updated_at):
+        with self.lock:
+            self.cursor.execute('SELECT updated_at FROM notes WHERE uuid = ?', (uuid,))
+            row = self.cursor.fetchone()
+            should_update = False
+            if not row:
+                should_update = True
+            elif datetime.fromisoformat(updated_at) > datetime.fromisoformat(row[0]):
+                should_update = True
+
+            if should_update:
+                self.cursor.execute('''REPLACE INTO notes (uuid, folder_uuid, title, content, is_deleted, updated_at)
+                    VALUES (?, ?, ?, ?, ?, ?)''', (uuid, folder_uuid, title, content, is_deleted, updated_at))
+                self.conn.commit()
 
     def close(self):
         if self.debounce_timer: self.debounce_timer.cancel()
