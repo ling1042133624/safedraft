@@ -20,6 +20,9 @@ class SafeDraftApp:
         self.root = root
         self.is_main_window = is_main_window
 
+        # [新增] 每个窗口自己维护自己的草稿 ID
+        self.current_draft_id = None
+
         self.is_topmost = False
         self.topmost_timer = None
         self.tray_icon = None
@@ -250,7 +253,10 @@ class SafeDraftApp:
 
     def on_key_release(self, event):
         content = self.text_area.get("1.0", "end-1c")
-        self.db.save_content(content)
+
+        # [修改] 将当前窗口的 ID 传给 DB，并接收 DB 返回的 ID (如果是新创建的)
+        # 这样新窗口第一次输入时会获得一个 ID，后续输入就会更新这个 ID
+        self.current_draft_id = self.db.save_content(content, self.current_draft_id)
 
     def on_ctrl_s(self, event):
         content = self.text_area.get("1.0", "end-1c")
@@ -262,9 +268,14 @@ class SafeDraftApp:
     def manual_save(self):
         content = self.text_area.get("1.0", "end-1c")
         if not content.strip(): self._flash_btn(self.btn_save, "空内容!", "#ff5555"); return
-        self.db.save_content_forced(content)
+
+        self.db.save_content_forced(content)  # 归档保存
+
         self.text_area.delete("1.0", "end")
-        self.db.current_session_id = None
+
+        # [修改] 清空后，重置当前窗口的 ID，确保下次输入产生新记录
+        self.current_draft_id = None
+
         self._flash_btn(self.btn_save, "已归档 ✔", self.colors["btn_save_success"])
 
     # --- 新增：主动同步逻辑 ---

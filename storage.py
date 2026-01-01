@@ -312,17 +312,16 @@ class StorageManager:
         self.base_path = self.get_real_executable_path()
         self.db_path = os.path.join(self.base_path, db_name)
 
-        # --- 核心修复：添加线程锁 ---
-        self.lock = threading.Lock()
+        self.lock = threading.Lock()  # 保持现有的锁机制
 
-        # check_same_thread=False 允许跨线程共享连接，但必须配合 Lock 使用
         self.conn = sqlite3.connect(self.db_path, check_same_thread=False)
         self.cursor = self.conn.cursor()
         self._init_db()
 
-        self.current_session_id = None
-        self._observers = []
+        # [修改] 删除 self.current_session_id = None 这行
+        # 我们不再在这里存 ID 了
 
+        self._observers = []
         self.ch_manager = ClickHouseManager(self)
         self.debounce_timer = None
         self.current_draft_cache = None
@@ -404,43 +403,30 @@ class StorageManager:
             self.conn.commit()
 
     # --- Drafts CRUD ---
-    def save_content(self, content):
-        if not content.strip(): return
+    def save_content(self, content, draft_id=None):
+        if not content.strip(): return None
         now = datetime.now()
 
-        with self.lock:
-            should_create_new = False
-            if self.current_session_id is None:
-                self.cursor.execute('SELECT id, last_updated_at FROM drafts ORDER BY id DESC LIMIT 1')
-                row = self.cursor.fetchone()
-                if row:
-                    if (now - datetime.fromisoformat(row[1])) > timedelta(minutes=10):
-                        should_create_new = True
-                    else:
-                        self.current_session_id = row[0]
-                else:
-                    should_create_new = True
-            elif not should_create_new:
-                self.cursor.execute('SELECT last_updated_at FROM drafts WHERE id = ?', (self.current_session_id,))
-                row = self.cursor.fetchone()
-                if row and (now - datetime.fromisoformat(row[0])) > timedelta(minutes=10): should_create_new = True
+        new_draft_id = draft_id
 
-            created_at_str = now.isoformat()
-            if should_create_new:
+        with self.lock:
+            if draft_id is None:
+                # 如果没有传入 ID，说明是新草稿，直接插入
                 self.cursor.execute('INSERT INTO drafts (content, created_at, last_updated_at) VALUES (?, ?, ?)',
                                     (content, now.isoformat(), now.isoformat()))
-                self.current_session_id = self.cursor.lastrowid
+                new_draft_id = self.cursor.lastrowid
             else:
-                self.cursor.execute('SELECT created_at FROM drafts WHERE id = ?', (self.current_session_id,))
-                row = self.cursor.fetchone()
-                if row: created_at_str = row[0]
+                # 如果传入了 ID，则更新该条记录
                 self.cursor.execute('UPDATE drafts SET content = ?, last_updated_at = ? WHERE id = ?',
-                                    (content, now.isoformat(), self.current_session_id))
+                                    (content, now.isoformat(), draft_id))
 
             self.conn.commit()
 
         self._notify_observers()
-        self._trigger_debounce_sync(content, created_at_str, now.isoformat())
+        # 触发防抖同步 (传入 new_draft_id 方便后续扩展，这里暂时保持原样)
+        self._trigger_debounce_sync(content, now.isoformat(), now.isoformat())
+
+        return new_draft_id
 
     def _trigger_debounce_sync(self, content, c_at, u_at):
         if self.debounce_timer: self.debounce_timer.cancel()
@@ -452,9 +438,9 @@ class StorageManager:
         if not content.strip(): return
         now = datetime.now()
         with self.lock:
+            # 强制保存总是作为新记录插入 (归档)
             self.cursor.execute('INSERT INTO drafts (content, created_at, last_updated_at) VALUES (?, ?, ?)',
                                 (content, now.isoformat(), now.isoformat()))
-            self.current_session_id = self.cursor.lastrowid
             self.conn.commit()
         self._notify_observers()
         self.ch_manager.push_log(content, now.isoformat(), now.isoformat())
