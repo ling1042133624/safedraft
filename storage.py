@@ -731,3 +731,10 @@ class StorageManager:
     def close(self):
         if self.debounce_timer: self.debounce_timer.cancel()
         self.conn.close()
+
+    # [新增] 修复删除报错的核心代码
+    def delete_draft(self, draft_id):
+        with self.lock:
+            self.cursor.execute('DELETE FROM drafts WHERE id = ?', (draft_id,))
+            self.conn.commit()
+        self._notify_observers()
