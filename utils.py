@@ -17,17 +17,24 @@ DEFAULT_FONT_SIZE = 12
 THEMES = {
     "Deep": {
         "bg": "#1e1e1e", "fg": "#d4d4d4", "accent": "#3c3c3c",
+        "bg_btn_default": "#1e1e1e", "fg_btn_default": "#d4d4d4", # 补充默认按钮色
         "list_bg": "#252526", "list_fg": "#e0e0e0",
         "text_bg": "#1e1e1e", "text_fg": "#d4d4d4", "insert_bg": "white",
         "btn_top_active": "#d35400", "btn_save_success": "#4caf50",
     },
     "Light": {
         "bg": "#f0f0f0", "fg": "#333333", "accent": "#e0e0e0",
+        "bg_btn_default": "#f0f0f0", "fg_btn_default": "#333333", # 补充默认按钮色
         "list_bg": "#ffffff", "list_fg": "#000000",
         "text_bg": "#ffffff", "text_fg": "#000000", "insert_bg": "black",
         "btn_top_active": "#e67e22", "btn_save_success": "#27ae60",
     }
 }
+
+class ThemeManager:
+    def get_theme(self, theme_name):
+        # 如果找不到指定主题，默认返回 Deep
+        return THEMES.get(theme_name, THEMES["Deep"])
 
 def get_icon_image():
     """将 Base64 转换为 PIL Image"""

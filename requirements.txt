@@ -2,7 +2,6 @@
 pyobjc-framework-Quartz; sys_platform == 'darwin'
 pyobjc-framework-Cocoa; sys_platform == 'darwin'
 
-
 keyboard==0.13.5
 Nuitka==2.8.6
 ordered-set==4.1.0
@@ -12,5 +11,4 @@ pystray==0.19.5
 pywin32==311
 six==1.17.0
 zstandard==0.25.0
-
-clickhouse-driver==0.2.6
+paramiko==3.4.0

@@ -86,7 +86,7 @@ pyinstaller --name "SafeDraft" --windowed --icon=icon.icns --onefile main.py
 python -m nuitka --standalone --windows-disable-console --enable-plugin=tk-inter --jobs=8 main.py
 
 # 发布方案
-python -m nuitka --standalone --onefile --jobs=8 --windows-disable-console --enable-plugin=tk-inter --enable-plugin=anti-bloat --no-pyi-file --output-filename=SafeDraft.exe main.py
+python -m nuitka --standalone --clean-cache=all --lto=yes --onefile --jobs=8 --windows-disable-console --enable-plugin=tk-inter --enable-plugin=anti-bloat --no-pyi-file --output-filename=SafeDraft.exe main.py
 ```
 
 ```

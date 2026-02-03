@@ -1,101 +1,137 @@
 import tkinter as tk
-from tkinter import messagebox
+from tkinter import ttk, messagebox
+import threading
+import time
 import sys
 import os
-import threading
-# import pystray
-from PIL import ImageTk
-from pynput import keyboard as pk
+import psutil
+from pynput import keyboard
 
-# 导入自定义模块
+# 项目内模块
 from storage import StorageManager
 from watcher import WindowWatcher
-from utils import THEMES, get_icon_image, DEFAULT_FONT_SIZE
+from utils import ThemeManager, StartupManager, get_icon_image, DEFAULT_FONT_SIZE
 from windows import HistoryWindow, SettingsDialog
-# 在原有导入下添加：
 from notebook import NotebookWindow
 
+
+class GlobalHotKeys:
+    def __init__(self, app):
+        self.app = app
+        self.listener = None
+        self.start()
+
+    def start(self):
+        if self.listener: return
+        self.listener = keyboard.GlobalHotKeys({
+            '<ctrl>+`': self.on_activate
+        })
+        self.listener.start()
+
+    def on_activate(self):
+        self.app.toggle_main_window()
+
+    def stop(self):
+        if self.listener:
+            self.listener.stop()
+            self.listener = None
+
+
 class SafeDraftApp:
+    # [修复1] 恢复 existing_db 参数，确保多窗口共享同一个数据库连接
     def __init__(self, root, existing_db=None, is_main_window=True):
         self.root = root
         self.is_main_window = is_main_window
 
-        self.is_topmost = False
-        self.topmost_timer = None
-        self.tray_icon = None
-        self.hotkey_listener = None
-
+        # 数据库初始化逻辑：优先使用传入的实例
         if existing_db:
             self.db = existing_db
         else:
             self.db = StorageManager()
 
-        # 初始化读取字体大小
+        # 加载配置
         try:
             self.font_size = int(self.db.get_setting("font_size", str(DEFAULT_FONT_SIZE)))
         except:
             self.font_size = DEFAULT_FONT_SIZE
 
-        if self.is_main_window:
-            self.watcher = WindowWatcher(self.db, self.on_trigger_detected)
-            self.watcher.start()
-            self.start_global_hotkey()
-        else:
-            self.watcher = None
+        # 1. 窗口基础设置
+        self.root.title("SafeDraft" if is_main_window else "SafeDraft (New)")
+        self.root.geometry("600x600")
 
-        theme_name = self.db.get_setting("theme", "Deep")
-        self.colors = THEMES.get(theme_name, THEMES["Deep"])
+        # 图标
+        self.load_icon()
 
-        self.setup_window()
+        # 2. 主题初始化
+        self.theme_manager = ThemeManager()
+        self.current_theme_name = self.db.get_setting("theme", "Deep")
+        self.colors = self.theme_manager.get_theme(self.current_theme_name)
+        self.root.configure(bg=self.colors["bg"])
+
+        # 初始化置顶定时器变量
+        self.topmost_timer = None
+
+        # 3. UI 构建
         self.setup_ui()
-        self.setup_events()
-        self.apply_theme()
 
-    def start_global_hotkey(self):
-        try:
-            self.hotkey_listener = pk.GlobalHotKeys({
-                '<ctrl>+`': self.on_global_hotkey
-            })
-            self.hotkey_listener.start()
-        except Exception as e:
-            print(f"Hotkey register failed: {e}")
+        # 4. 逻辑组件
+        if self.is_main_window:
+            self.watcher = WindowWatcher(self.db, self.on_trigger)
+            self.watcher.start()
+            self.hotkeys = GlobalHotKeys(self)
 
-    # [请替换 SafeDraftApp 类中的这三个方法]
-    def setup_window(self):
-        title = "SafeDraft" if self.is_main_window else "SafeDraft (New)"
-        self.root.title(title)
-        # --- 修改 1: 宽度调整为 620，高度 600 ---
-        self.root.geometry("620x600+100+100")
-        # -------------------------------------
-        try:
+            self.setup_tray()
+
             alpha = float(self.db.get_setting("window_alpha", "0.95"))
             self.root.attributes("-alpha", alpha)
-        except:
-            pass
 
+            self.root.protocol("WM_DELETE_WINDOW", self.on_close_window)
+        else:
+            self.watcher = None
+            # [修复2] 子窗口使用安全的关闭方法，防止定时器崩溃
+            self.root.protocol("WM_DELETE_WINDOW", self.on_sub_window_close)
+
+        # 5. 加载初始数据
+        self.current_draft_id = None
+        self.last_content = ""
+
+        # 仅主窗口自动加载历史，新建窗口保持空白
+        if self.is_main_window:
+            self.load_latest_draft()
+
+        # 6. 事件绑定 & 自动保存定时器
+        self.auto_save_timer = None
+        self.text_area.bind("<Control-s>", self.on_ctrl_s)
+        self.text_area.bind("<<Modified>>", self.on_text_change)
+
+        self.db.add_observer(self.on_db_update)
+
+    def load_icon(self):
         try:
+            from PIL import ImageTk
             pil_img = get_icon_image()
-            self.app_icon = ImageTk.PhotoImage(pil_img)
-            self.root.iconphoto(True, self.app_icon)
+            self.tk_icon = ImageTk.PhotoImage(pil_img)
+            self.root.iconphoto(True, self.tk_icon)
         except Exception as e:
-            print(f"Icon set failed: {e}")
+            print(f"Icon load fail: {e}")
 
     def setup_ui(self):
         self.toolbar = tk.Frame(self.root, height=40)
         self.toolbar.pack(fill="x", padx=5, pady=5)
 
-        # --- 修改 2: 紧凑布局 (padx 减小) ---
-
         # [左侧按钮组]
         self.btn_new = tk.Button(self.toolbar, text="➕ 新建", command=self.open_new_window, relief="flat", padx=5)
         self.btn_new.pack(side="left", padx=2)
 
-        self.btn_save = tk.Button(self.toolbar, text="💾 保存并清空", command=self.manual_save, relief="flat",
+        self.btn_save = tk.Button(self.toolbar, text="💾 保存", command=self.manual_save, relief="flat",
                                   padx=5)
         self.btn_save.pack(side="left", padx=2)
 
-        self.btn_sync = tk.Button(self.toolbar, text="☁️ 同步", command=self.manual_sync, relief="flat", padx=5)
-        self.btn_sync.pack(side="left", padx=2)
+        if self.is_main_window:
+            self.btn_up = tk.Button(self.toolbar, text="☁️⬆️", command=self.manual_upload, relief="flat", padx=2)
+            self.btn_up.pack(side="left", padx=2)
+            self.btn_down = tk.Button(self.toolbar, text="☁️⬇️", command=self.manual_download, relief="flat", padx=2)
+            self.btn_down.pack(side="left", padx=2)
 
         if self.is_main_window:
             self.btn_settings = tk.Button(self.toolbar, text="⚙️ 设置", command=self.open_settings, relief="flat",
@@ -104,14 +140,11 @@ class SafeDraftApp:
         else:
             self.btn_settings = None
 
-        # [右侧按钮组] (注意：pack side='right' 是从右向左堆叠的)
-
-        # 1. 最右边：临时置顶
+        # [右侧按钮组]
         self.btn_top = tk.Button(self.toolbar, text="📌 临时置顶", command=self.toggle_manual_topmost, relief="flat",
                                  padx=5)
         self.btn_top.pack(side="right", padx=2)
 
-        # 2. 中间：笔记 (在置顶的左边)
         if self.is_main_window:
             self.btn_notebook = tk.Button(self.toolbar, text="📓 笔记", command=self.open_notebook, relief="flat",
                                           padx=5)
@@ -119,11 +152,9 @@ class SafeDraftApp:
         else:
             self.btn_notebook = None
 
-        # 3. 左边：时光机 (在笔记的左边)
         self.btn_history = tk.Button(self.toolbar, text="🕒 历史归档", command=self.open_history, relief="flat",
                                      padx=5)
         self.btn_history.pack(side="right", padx=2)
-        # -------------------------------------
 
         self.text_frame = tk.Frame(self.root, padx=5, pady=5)
         self.text_frame.pack(fill="both", expand=True)
@@ -133,259 +164,264 @@ class SafeDraftApp:
                                  undo=True, wrap="word", padx=10, pady=10)
         self.text_area.pack(fill="both", expand=True)
 
-    def apply_theme(self):
-        c = self.colors
-        self.root.configure(bg=c["bg"])
-        self.toolbar.configure(bg=c["bg"])
-        self.text_frame.configure(bg=c["bg"])
+        self.apply_theme_colors()
 
-        # 辅助函数：统一配置按钮样式
-        def config_btn(btn, bg=c["accent"], fg=c["fg"]):
-            if btn:
-                # [核心修复] 必须设置 bg，flat 样式的按钮才会显示背景色块
-                btn.configure(bg=bg, fg=fg, activebackground=c["bg"], activeforeground=fg)
-
-        # 逐个配置所有按钮
-        config_btn(self.btn_new)
-        config_btn(self.btn_save)
-        config_btn(self.btn_sync)
-        config_btn(self.btn_settings)
-
-        # --- 👇 必须加上这一行，笔记按钮才会有样式 👇 ---
-        config_btn(self.btn_notebook)
-        # ---------------------------------------------
-
-        config_btn(self.btn_history)
-
-        # 临时置顶按钮的特殊颜色处理
-        if self.is_topmost:
-            top_color = "#4a90e2" if "强制" in self.btn_top.cget("text") else c["btn_top_active"]
-            config_btn(self.btn_top, bg=top_color, fg="white")
-        else:
-            config_btn(self.btn_top)
-
-        self.text_area.configure(bg=c["text_bg"], fg=c["text_fg"], insertbackground=c["insert_bg"])
-
-    # --- 新增方法 ---
-    def open_notebook(self):
-        NotebookWindow(self.root, self.db, self.colors)
-
-
-    def open_new_window(self):
-        new_root = tk.Toplevel(self.root)
-        new_app = SafeDraftApp(new_root, existing_db=self.db, is_main_window=False)
-        new_root.app = new_app
-
-
-    def switch_theme(self, theme_name):
-        self.colors = THEMES.get(theme_name, THEMES["Deep"])
-        self.apply_theme()
-
-    def set_window_alpha(self, value):
-        try:
-            self.root.attributes("-alpha", float(value))
-        except:
-            pass
-
-    def set_font_size(self, size):
-        try:
-            new_size = int(size)
-            self.text_area.configure(font=("Consolas", new_size))
-            self.font_size = new_size
-        except:
-            pass
-
-    def setup_events(self):
-        self.text_area.bind("<KeyRelease>", self.on_key_release)
-        self.text_area.bind("<Control-s>", self.on_ctrl_s)
-        self.root.protocol("WM_DELETE_WINDOW", self.on_close)
-
-    def on_close(self):
-        if not self.is_main_window:
-            self.root.destroy()
+    # --- 同步逻辑 ---
+    def manual_upload(self):
+        if self.db.get_setting("ssh_enabled", "0") != "1":
+            messagebox.showinfo("提示", "请先在设置中开启并配置服务器同步功能。")
             return
+        ip = self.db.get_setting("ssh_ip", "")
+        path = self.db.get_setting("ssh_path", "")
+        if not ip or not path:
+            messagebox.showerror("配置缺失", "请先在设置中填写服务器 IP 和路径。")
+            return
+        if messagebox.askyesno("确认", "确定要上传当前数据覆盖服务器端吗？"):
+            self._run_async_sync(self.db.sync_upload, ip, path, "上传成功")
 
-        exit_action = self.db.get_setting("exit_action", "ask")
-        if exit_action == "tray":
-            self.minimize_to_tray()
-        elif exit_action == "quit":
-            self.quit_app()
-        else:
-            res = messagebox.askyesnocancel("退出确认",
-                                            "是否要保持后台运行？\n\n【是】最小化到系统托盘 (推荐)\n【否】彻底退出程序\n【取消】手滑了")
-            if res is True:
-                self.db.set_setting("exit_action", "tray"); self.minimize_to_tray()
-            elif res is False:
-                self.db.set_setting("exit_action", "quit"); self.quit_app()
+    def manual_download(self):
+        if self.db.get_setting("ssh_enabled", "0") != "1":
+            messagebox.showinfo("提示", "请先在设置中开启并配置服务器同步功能。")
+            return
+        ip = self.db.get_setting("ssh_ip", "")
+        path = self.db.get_setting("ssh_path", "")
+        if messagebox.askyesno("确认", "下载将覆盖本地所有数据（不可撤销）。\n确定继续吗？"):
+            self._run_async_sync(self.db.sync_download, ip, path, "下载成功，数据已重载")
 
-    def minimize_to_tray(self):
-        self.root.withdraw()
-        pil_img = get_icon_image()
+    def _run_async_sync(self, func, ip, path, success_msg):
+        def _worker():
+            try:
+                func(ip, path)
+                self.root.after(0, lambda: messagebox.showinfo("成功", success_msg))
+            except Exception as e:
+                err = str(e)
+                self.root.after(0, lambda: messagebox.showerror("同步失败", f"错误详情:\n{err}"))
 
-        # --- 修改：延迟加载 pystray ---
+        threading.Thread(target=_worker, daemon=True).start()
+
+    def setup_tray(self):
         import pystray
-        # ----------------------------
+        from PIL import Image
 
-        def on_tray_quit(icon, item): icon.stop(); self.root.after(0, self.quit_app)
+        def quit_app(icon, item):
+            icon.stop()
+            self.root.after(0, self.exit_app)
 
-        def on_tray_show(icon, item): icon.stop(); self.root.after(0, self.restore_from_tray)
+        def show_app(icon, item):
+            self.root.after(0, self.show_main_window)
 
-        menu = (pystray.MenuItem('显示主界面', on_tray_show, default=True), pystray.MenuItem('彻底退出', on_tray_quit))
-        self.tray_icon = pystray.Icon("SafeDraft", pil_img, "SafeDraft", menu)
+        image = get_icon_image()
+        menu = pystray.Menu(
+            pystray.MenuItem("显示", show_app, default=True),
+            pystray.MenuItem("退出", quit_app)
+        )
+        self.tray_icon = pystray.Icon("SafeDraft", image, "SafeDraft", menu)
         threading.Thread(target=self.tray_icon.run, daemon=True).start()
 
-    def restore_from_tray(self):
-        if self.tray_icon: self.tray_icon.stop(); self.tray_icon = None
-        self.root.deiconify();
-        self.root.lift();
+    def on_close_window(self):
+        action = self.db.get_setting("exit_action", "ask")
+        if action == "quit":
+            self.exit_app()
+        elif action == "tray":
+            self.hide_main_window()
+        else:
+            ans = messagebox.askyesnocancel("退出", "是=最小化到托盘\n否=完全退出程序")
+            if ans is None: return
+            if ans:
+                self.hide_main_window()
+            else:
+                self.exit_app()
+
+    # [修复2] 子窗口关闭逻辑：取消定时器，防止崩溃
+    def on_sub_window_close(self):
+        if self.auto_save_timer:
+            self.root.after_cancel(self.auto_save_timer)
+            # 可选：关闭前立即执行一次保存
+            self.perform_auto_save()
+        self.root.destroy()
+
+    def show_main_window(self):
+        self.root.deiconify()
+        self.root.lift()
         self.root.focus_force()
 
-    def quit_app(self):
-        if self.tray_icon: self.tray_icon.stop()
-        if self.watcher: self.watcher.stop()
-        if self.hotkey_listener: self.hotkey_listener.stop()
-        self.db.close()
-        self.root.destroy()
-        os._exit(0)
+    def hide_main_window(self):
+        self.root.withdraw()
 
-    def on_key_release(self, event):
-        content = self.text_area.get("1.0", "end-1c")
-        self.db.save_content(content)
+    def toggle_main_window(self):
+        if self.root.state() == 'normal':
+            if self.root.winfo_viewable():
+                self.hide_main_window()
+            else:
+                self.show_main_window()
+        else:
+            self.show_main_window()
+
+    def exit_app(self):
+        if self.watcher: self.watcher.stop()
+        if self.hotkeys: self.hotkeys.stop()
+        if hasattr(self, 'tray_icon'): self.tray_icon.stop()
+        self.db.close()
+        self.root.quit()
+        sys.exit()
+
+    def on_trigger(self, rule_type, val):
+        master_on = self.db.get_setting("master_monitor", "1")
+        if master_on == "1":
+            self.root.after(0, self._perform_auto_pop)
+
+    def _perform_auto_pop(self):
+        self.show_main_window()
+        self._start_auto_topmost()
+
+    def _start_auto_topmost(self):
+        self.root.attributes('-topmost', True)
+        self.btn_top.config(text="📌 锁定(2m)", bg="#4a90e2", fg="white")
+
+        if self.topmost_timer: self.root.after_cancel(self.topmost_timer)
+        self.topmost_timer = self.root.after(120000, self._cancel_topmost)
+
+    def _cancel_topmost(self):
+        self.topmost_timer = None
+        self.root.attributes('-topmost', False)
+        bg_color = self.colors.get("bg_btn_default", "#f0f0f0")
+        self.btn_top.config(text="📌 临时置顶", bg=bg_color, fg=self.colors["fg"])
+
+    def toggle_manual_topmost(self):
+        is_currently_top = self.root.attributes("-topmost")
+
+        if is_currently_top:
+            self.root.attributes("-topmost", False)
+            if self.topmost_timer:
+                self.root.after_cancel(self.topmost_timer)
+                self.topmost_timer = None
+            bg_color = self.colors.get("bg_btn_default", "#f0f0f0")
+            self.btn_top.config(text="📌 临时置顶", bg=bg_color, fg=self.colors["fg"])
+        else:
+            self.root.attributes("-topmost", True)
+            if self.topmost_timer:
+                self.root.after_cancel(self.topmost_timer)
+                self.topmost_timer = None
+            self.btn_top.config(text="📌 已强制锁定", bg="#4a90e2", fg="white")
+
+    def on_text_change(self, event):
+        if self.text_area.edit_modified():
+            content = self.text_area.get("1.0", "end-1c")
+            if content != self.last_content:
+                self.last_content = content
+                if self.auto_save_timer:
+                    self.root.after_cancel(self.auto_save_timer)
+                self.auto_save_timer = self.root.after(1000, self.perform_auto_save)
+            self.text_area.edit_modified(False)
 
     def on_ctrl_s(self, event):
         content = self.text_area.get("1.0", "end-1c")
         if content.strip():
             self.db.save_snapshot(content)
-            self._flash_btn(self.btn_save, "快照已存 ✔", self.colors["btn_save_success"])
+            success_color = self.colors.get("btn_save_success", "#4caf50")
+            self.flash_button(self.btn_save, "✅ 已快照", "💾 保存", success_color)
         return "break"
+
+    def perform_auto_save(self):
+        # 增加安全检查，防止窗口销毁后调用报错
+        try:
+            if not self.root.winfo_exists(): return
+            content = self.text_area.get("1.0", "end-1c")
+            if not content.strip(): return
+            new_id = self.db.save_content(content, self.current_draft_id)
+            if new_id:
+                self.current_draft_id = new_id
+        except:
+            pass
+        finally:
+            self.auto_save_timer = None
 
     def manual_save(self):
         content = self.text_area.get("1.0", "end-1c")
-        if not content.strip(): self._flash_btn(self.btn_save, "空内容!", "#ff5555"); return
-        self.db.save_content_forced(content)
-        self.text_area.delete("1.0", "end")
-        self.db.current_session_id = None
-        self._flash_btn(self.btn_save, "已归档 ✔", self.colors["btn_save_success"])
+        if content.strip():
+            self.db.save_snapshot(content)
+            self.text_area.delete("1.0", "end")
+            self.current_draft_id = None
+            self.last_content = ""
+            success_color = self.colors.get("btn_save_success", "#4caf50")
+            self.flash_button(self.btn_save, "✅ 已归档", "💾 保存", success_color)
 
-    # --- 新增：主动同步逻辑 ---
-    def manual_sync(self):
-        # 1. 检查是否开启
-        if self.db.get_setting("ch_enabled", "0") != "1":
-            messagebox.showinfo("提示", "云同步未开启。\n请前往【设置 -> 云端同步】进行配置。")
-            return
+    def load_latest_draft(self):
+        history = self.db.get_history()
+        if history:
+            latest = history[0]
+            self.current_draft_id = latest[0]
+            self.text_area.delete("1.0", "end")
+            self.text_area.insert("1.0", latest[1])
+            self.last_content = latest[1]
 
-        # 2. UI 变为加载状态
-        orig_text = "☁️ 同步"
-        self.btn_sync.config(text="⏳...", state="disabled")
+    def on_db_update(self):
+        pass
 
-        # 3. 异步执行
-        def _run():
-            try:
-                # 执行同步
-                count = self.db.ch_manager.pull_and_merge()
-
-                # 成功回调
-                self.root.after(0, lambda: self._on_sync_done(count, orig_text))
-            except Exception as e:
-                # --- [关键修复] ---
-                # 必须先将异常转为字符串存入局部变量，否则 lambda 执行时 e 已被销毁
-                err_msg = str(e)
-                self.root.after(0, lambda: self._on_sync_fail(err_msg, orig_text))
-
-        threading.Thread(target=_run, daemon=True).start()
-
-    def _on_sync_done(self, count, orig_text):
-        self.btn_sync.config(text=orig_text, state="normal")
-        if count > 0:
-            messagebox.showinfo("同步完成", f"成功从云端拉取了 {count} 条新记录！\n请在“时光机”中查看。")
-        else:
-            messagebox.showinfo("同步完成", "本地已是最新状态。")
-
-    def _on_sync_fail(self, err_msg, orig_text):
-        self.btn_sync.config(text=orig_text, state="normal")
-        messagebox.showerror("同步失败", f"无法连接到云端：\n{err_msg}")
-    # -----------------------
-
-    def _flash_btn(self, btn, text, color):
-        orig_text = "💾 保存并清空"
-        orig_fg = self.colors["fg"]
-        orig_bg = self.colors["accent"]
-        btn.config(text=text, fg=color)
-        self.root.after(1000, lambda: btn.config(text=orig_text, fg=orig_fg, bg=orig_bg))
-
-    def open_history(self):
-        HistoryWindow(self.root, self.db, self.restore_draft_content, self.colors)
-
-    def restore_draft_content(self, content):
-        # 移除了这里的确认弹窗，改为直接执行
+    def restore_draft(self, content):
         self.text_area.delete("1.0", "end")
         self.text_area.insert("1.0", content)
-        self.text_area.focus_set()
+        self.current_draft_id = None
+        self.perform_auto_save()
+        self.show_main_window()
+
+    def open_new_window(self):
+        new_root = tk.Toplevel(self.root)
+        # [修复1] 传递 existing_db=self.db，确保新窗口复用连接
+        app = SafeDraftApp(new_root, existing_db=self.db, is_main_window=False)
+        new_root.app = app
+
+    def open_history(self):
+        win = HistoryWindow(self.root, self.db, self.restore_draft, self.colors)
+
+    def open_notebook(self):
+        win = NotebookWindow(self.root, self.db, self.colors)
 
     def open_settings(self):
-        if self.watcher:
-            SettingsDialog(self.root, self.db, self.watcher, self)
+        win = SettingsDialog(self.root, self.db, self.watcher, self)
 
-    def on_global_hotkey(self):
-        self.root.after(0, self._perform_auto_pop_force)
+    def apply_theme_colors(self):
+        c = self.colors
+        self.root.configure(bg=c["bg"])
+        self.toolbar.configure(bg=c["bg"])
+        self.text_frame.configure(bg=c["bg"])
+        self.text_area.configure(bg=c["text_bg"], fg=c["text_fg"], insertbackground=c["text_fg"])
 
-    def _perform_auto_pop_force(self):
-        self.restore_from_tray(); self._start_auto_topmost()
+        # 按钮样式通用
+        for widget in self.toolbar.winfo_children():
+            if isinstance(widget, tk.Button):
+                if widget == getattr(self, 'btn_top', None):
+                    is_top = self.root.attributes("-topmost")
+                    if is_top:
+                        widget.config(bg="#4a90e2", fg="white")
+                    else:
+                        widget.config(bg=c.get("bg_btn_default", "#f0f0f0"), fg=c["fg"])
+                else:
+                    widget.config(bg=c.get("bg_btn_default", "#f0f0f0"), fg=c["fg"], activebackground=c["accent"])
 
-    def on_trigger_detected(self):
-        """Watcher 发现目标后的回调"""
-        # --- 新增：检查总开关 ---
-        master_switch = self.db.get_setting("master_monitor", "1")
-        if master_switch == "0":
-            return  # 总开关关闭，忽略自动弹出
-        # ----------------------
+        self.text_area.configure(font=("Consolas", self.font_size))
 
-        self.root.after(0, self._perform_auto_pop)
+    def switch_theme(self, theme_name):
+        self.colors = self.theme_manager.get_theme(theme_name)
+        self.apply_theme_colors()
 
-    def _perform_auto_pop(self):
-        if self.is_topmost and not self.topmost_timer: return
-        if self.root.state() == 'withdrawn':
-            self.restore_from_tray()
-        elif self.root.state() == 'iconic':
-            self.root.deiconify()
-        if self.root.focus_displayof() is None: self.root.geometry("+100+100")
-        self._start_auto_topmost()
+    def set_window_alpha(self, alpha):
+        self.root.attributes("-alpha", float(alpha))
 
-    def _start_auto_topmost(self):
-        self.is_topmost = True
-        self.root.attributes('-topmost', True)
-        self.btn_top.config(text="📌 锁定(2m)", bg=self.colors["btn_top_active"], fg="white")
-        if self.topmost_timer: self.root.after_cancel(self.topmost_timer)
-        self.topmost_timer = self.root.after(120000, self._cancel_topmost)
+    def set_font_size(self, size):
+        self.font_size = int(size)
+        self.text_area.configure(font=("Consolas", self.font_size))
 
-    def _cancel_topmost(self):
-        self.is_topmost = False
-        self.topmost_timer = None
-        self.root.attributes('-topmost', False)
-        self.btn_top.config(text="📌 临时置顶", bg=self.colors["accent"], fg=self.colors["fg"])
-
-    def toggle_manual_topmost(self):
-        if self.is_topmost:
-            if self.topmost_timer: self.root.after_cancel(self.topmost_timer)
-            self._cancel_topmost()
+    def flash_button(self, btn, text, restore_text, text_color=None):
+        orig_fg = self.colors["fg"]
+        if text_color:
+            btn.config(text=text, fg=text_color)
         else:
-            self.is_topmost = True
-            self.root.attributes('-topmost', True)
-            self.btn_top.config(text="📌 已强制锁定", bg="#4a90e2", fg="white")
-            if self.topmost_timer: self.root.after_cancel(self.topmost_timer)
-            self.topmost_timer = None
+            btn.config(text=text)
+        self.root.after(1500, lambda: btn.config(text=restore_text, fg=orig_fg))
 
 
 if __name__ == "__main__":
-    if sys.platform == "win32":
-        import ctypes
-
-        myappid = 'SafeDraft.App.Version.1.0'
-        try:
-            ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID(myappid)
-        except:
-            pass
-
     root = tk.Tk()
     app = SafeDraftApp(root)
     root.mainloop()

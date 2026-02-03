@@ -14,9 +14,8 @@ class HistoryWindow(tk.Toplevel):
         super().__init__(parent)
         self.title("历史归档")
 
-        # --- 修改 1: 窗口加宽，从 400 改为 650，高度保持 600 ---
-        self.geometry("650x600")
-        # ---------------------------------------------------
+        # 窗口大小
+        self.geometry("750x750")
 
         self.db = db
         self.restore_callback = restore_callback
@@ -50,7 +49,6 @@ class HistoryWindow(tk.Toplevel):
         except:
             pass
 
-    # [windows.py] HistoryWindow 类
     def setup_ui(self):
         # 1. 顶部栏
         top_bar = tk.Frame(self, bg=self.colors["bg"], pady=5)
@@ -58,17 +56,6 @@ class HistoryWindow(tk.Toplevel):
 
         lbl = tk.Label(top_bar, text="双击记录恢复 | 选中可删除", bg=self.colors["bg"], fg="#888888")
         lbl.pack(side="left")
-
-        # 云端拉取按钮
-        btn_pull = tk.Button(top_bar, text="☁️ 拉取云端", command=self.on_pull_cloud,
-                             bg=self.colors["accent"], fg=self.colors["fg"], relief="flat", font=("Arial", 9))
-        btn_pull.pack(side="right")
-
-        # --- [核心修改]：检查同步开关，决定按钮是否可用 ---
-        if self.db.get_setting("ch_enabled", "0") != "1":
-            # 如果未开启，禁用按钮并修改鼠标样式
-            btn_pull.config(state="disabled", cursor="arrow", bg=self.colors["list_bg"], fg="#888888")
-        # -----------------------------------------------
 
         # 2. 搜索栏
         search_frame = tk.Frame(self, bg=self.colors["bg"], pady=5, padx=10)
@@ -120,7 +107,6 @@ class HistoryWindow(tk.Toplevel):
         tk.Button(btn_frame, text="⭐ 存笔记", command=self.on_save_to_note,
                   bg="#f1c40f", fg="white", relief="flat", padx=8).pack(side="right", padx=2)
 
-    # --- [新增方法] ---
     def on_deduplicate(self):
         if messagebox.askyesno("清理确认", "确定要扫描并删除所有内容重复的记录吗？\n\n仅保留最新的一条记录。"):
             try:
@@ -132,8 +118,7 @@ class HistoryWindow(tk.Toplevel):
                 self.refresh_data()
             except Exception as e:
                 messagebox.showerror("错误", f"清理失败: {str(e)}")
-    # --- 新增方法 ---
-    # --- 修改：收藏到笔记（包含自定义成功弹窗逻辑）---
+
     def on_save_to_note(self):
         selection = self.listbox.curselection()
         if not selection: return
@@ -193,15 +178,13 @@ class HistoryWindow(tk.Toplevel):
             self.db.create_note(target_fid, title, content, source_draft_id=draft_id)
             select_win.destroy()
 
-            # --- 核心修改：检查配置，决定是否弹窗 ---
+            # 检查配置，决定是否弹窗
             if self.db.get_setting("show_note_success_msg", "1") == "1":
                 self.show_success_dialog(title)
-            # -----------------------------------
 
         tk.Button(select_win, text="确定", command=_confirm, bg=self.colors["accent"], fg=self.colors["fg"]).pack(
             pady=10)
 
-    # --- 新增：自定义成功弹窗（带“不再提示”选项）---
     def show_success_dialog(self, title):
         dlg = tk.Toplevel(self)
         dlg.title("成功")
@@ -230,7 +213,7 @@ class HistoryWindow(tk.Toplevel):
                            bg=self.colors["bg"], fg=self.colors["fg"], font=("Arial", 10))
         lbl_msg.pack(side="left", fill="both", expand=True)
 
-        # 底部按钮区域 (使用 list_bg 作为底色以区分)
+        # 底部按钮区域
         frame_bottom = tk.Frame(dlg, bg=self.colors["list_bg"], padx=15, pady=10)
         frame_bottom.pack(side="bottom", fill="x")
 
@@ -245,7 +228,6 @@ class HistoryWindow(tk.Toplevel):
 
         # 确定按钮
         def on_ok():
-            # 如果勾选，保存配置到数据库
             if var_skip.get():
                 self.db.set_setting("show_note_success_msg", "0")
             dlg.destroy()
@@ -254,29 +236,9 @@ class HistoryWindow(tk.Toplevel):
                            bg=self.colors["accent"], fg=self.colors["fg"], relief="flat", width=8)
         btn_ok.pack(side="right")
 
-        # 模态显示（阻塞交互直到关闭）
         dlg.transient(self)
         dlg.grab_set()
         self.wait_window(dlg)
-
-    def on_pull_cloud(self):
-        if messagebox.askyesno("确认", "将从 ClickHouse 拉取所有记录并合并到本地，可能需要几秒钟。\n\n继续吗？"):
-            try:
-                def run_pull():
-                    try:
-                        count = self.db.ch_manager.pull_and_merge()
-                        self.after(0, lambda: messagebox.showinfo("完成",
-                                                                  f"同步成功！\n新增了 {count} 条本地未记录的草稿。"))
-                        self.after(0, self.refresh_data)
-                    except Exception as e:
-                        # --- [关键修复] ---
-                        err_msg = str(e)
-                        self.after(0, lambda: messagebox.showerror("错误", f"同步失败: {err_msg}"))
-
-                threading.Thread(target=run_pull, daemon=True).start()
-
-            except Exception as e:
-                messagebox.showerror("错误", str(e))
 
     def on_toggle_quick_restore(self):
         val = "1" if self.quick_restore_var.get() else "0"
@@ -353,11 +315,10 @@ class SettingsDialog(tk.Toplevel):
         self.notebook.add(self.page_rules, text=" 监控规则 ")
         self.setup_rules_ui()
 
-        # --- 新增 Tab 2: 云端同步 ---
-        self.page_cloud = tk.Frame(self.notebook, bg=self.colors["bg"])
-        self.notebook.add(self.page_cloud, text=" ☁️ 云端同步 ")
-        self.setup_cloud_ui()
-        # ---------------------------
+        # 新增：服务器同步
+        self.page_sync = tk.Frame(self.notebook, bg=self.colors["bg"])
+        self.notebook.add(self.page_sync, text=" 服务器同步 ")
+        self.setup_sync_ui()
 
         self.page_general = tk.Frame(self.notebook, bg=self.colors["bg"])
         self.notebook.add(self.page_general, text=" 常规设置 ")
@@ -371,142 +332,50 @@ class SettingsDialog(tk.Toplevel):
         except:
             pass
 
-    # --- 新增：云端设置 UI ---
-    def setup_cloud_ui(self):
-        f = tk.Frame(self.page_cloud, bg=self.colors["bg"], padx=20, pady=20)
+    def setup_sync_ui(self):
+        f = tk.Frame(self.page_sync, bg=self.colors["bg"], padx=20, pady=20)
         f.pack(fill="both", expand=True)
 
-        # 标题
-        tk.Label(f, text="存储模式选择", bg=self.colors["bg"], fg="#4a90e2",
-                 font=("Arial", 11, "bold")).pack(anchor="w", pady=(0, 5))
+        tk.Label(f, text="服务器同步设置 (SSH/SCP)",
+                 bg=self.colors["bg"], fg="#4a90e2", font=("Arial", 11, "bold")).pack(anchor="w", pady=(0, 10))
 
-        # --- 核心修改：总开关 (SQLite vs ClickHouse) ---
-        self.var_ch_enabled = tk.BooleanVar(value=(self.db.get_setting("ch_enabled", "0") == "1"))
+        # 开关
+        is_enabled = self.db.get_setting("ssh_enabled", "0") == "1"
+        self.var_ssh_enabled = tk.BooleanVar(value=is_enabled)
+        chk = tk.Checkbutton(f, text="启用服务器同步功能", variable=self.var_ssh_enabled,
+                             bg=self.colors["bg"], fg=self.colors["fg"], selectcolor=self.colors["accent"],
+                             activebackground=self.colors["bg"], activeforeground=self.colors["fg"],
+                             command=self.toggle_ssh_enabled)
+        chk.pack(anchor="w", pady=(0, 15))
 
-        # command 绑定到刷新 UI 状态的方法
-        cb = tk.Checkbutton(f, text="启用 ClickHouse 云端同步 (取消勾选即仅使用本地 SQLite)",
-                            variable=self.var_ch_enabled,
-                            bg=self.colors["bg"], fg=self.colors["fg"], selectcolor=self.colors["accent"],
-                            activebackground=self.colors["bg"], activeforeground=self.colors["fg"],
-                            command=self.refresh_cloud_ui_state)
-        cb.pack(anchor="w", pady=(0, 15))
+        # Grid布局
+        grid_frame = tk.Frame(f, bg=self.colors["bg"])
+        grid_frame.pack(fill="x")
 
-        # 表单区域
-        self.grid_frame = tk.Frame(f, bg=self.colors["bg"])
-        self.grid_frame.pack(fill="x")
+        # 1. IP
+        tk.Label(grid_frame, text="服务器 IP (user@ip):", bg=self.colors["bg"], fg=self.colors["fg"]).grid(row=0, column=0, sticky="w", pady=5)
+        self.entry_ssh_ip = tk.Entry(grid_frame, bg=self.colors["list_bg"], fg=self.colors["list_fg"], insertbackground=self.colors["fg"])
+        self.entry_ssh_ip.grid(row=0, column=1, sticky="ew", padx=10, pady=5)
+        self.entry_ssh_ip.insert(0, self.db.get_setting("ssh_ip", ""))
+        # 绑定保存
+        self.entry_ssh_ip.bind("<FocusOut>", lambda e: self.db.set_setting("ssh_ip", self.entry_ssh_ip.get().strip()))
 
-        self.entries = {}
-        fields = [
-            ("Host (地址)", "ch_host", "play.clickhouse.com"),
-            ("Port (端口)", "ch_port", "9000"),
-            ("Database (库名)", "ch_database", "default"),
-            ("User (用户)", "ch_user", "default"),
-            ("Password (密码)", "ch_password", "")
-        ]
+        # 2. Path
+        tk.Label(grid_frame, text="远程目录路径:", bg=self.colors["bg"], fg=self.colors["fg"]).grid(row=1, column=0, sticky="w", pady=5)
+        self.entry_ssh_path = tk.Entry(grid_frame, bg=self.colors["list_bg"], fg=self.colors["list_fg"], insertbackground=self.colors["fg"])
+        self.entry_ssh_path.grid(row=1, column=1, sticky="ew", padx=10, pady=5)
+        self.entry_ssh_path.insert(0, self.db.get_setting("ssh_path", "/tmp"))
+        # 绑定保存
+        self.entry_ssh_path.bind("<FocusOut>", lambda e: self.db.set_setting("ssh_path", self.entry_ssh_path.get().strip()))
 
-        for idx, (label_text, key, default_val) in enumerate(fields):
-            lbl = tk.Label(self.grid_frame, text=label_text, bg=self.colors["bg"], fg=self.colors["fg"])
-            lbl.grid(row=idx, column=0, sticky="w", pady=5)
+        grid_frame.columnconfigure(1, weight=1)
 
-            val = self.db.get_setting(key, default_val)
-            if key == "ch_password":
-                entry = tk.Entry(self.grid_frame, show="*", bg=self.colors["list_bg"], fg=self.colors["list_fg"],
-                                 insertbackground=self.colors["fg"], disabledbackground=self.colors["bg"])
-            else:
-                entry = tk.Entry(self.grid_frame, bg=self.colors["list_bg"], fg=self.colors["list_fg"],
-                                 insertbackground=self.colors["fg"], disabledbackground=self.colors["bg"])
-            entry.insert(0, val)
-            entry.grid(row=idx, column=1, sticky="ew", padx=10, pady=5)
-            self.entries[key] = entry
+        tk.Label(f, text="* 请确保本地已配置 SSH 公钥免密登录到服务器。\n* 启用后，主界面将显示上传/下载按钮。",
+                 bg=self.colors["bg"], fg="#888888", justify="left").pack(anchor="w", pady=20)
 
-        self.grid_frame.columnconfigure(1, weight=1)
-
-        # 按钮区
-        btn_frame = tk.Frame(f, bg=self.colors["bg"], pady=20)
-        btn_frame.pack(fill="x")
-
-        # --- 需要引用的按钮 (测试连接、推送历史) ---
-        self.btn_test = tk.Button(btn_frame, text="测试连接", command=self.test_cloud_conn,
-                                  bg=self.colors["accent"], fg=self.colors["fg"], relief="flat", padx=10)
-        self.btn_test.pack(side="left")
-
-        self.btn_push = tk.Button(btn_frame, text="⬆️ 推送本地历史", command=self.on_push_history,
-                                  bg="#e67e22", fg="white", relief="flat", padx=10)
-        self.btn_push.pack(side="left", padx=10)
-        # ----------------------------------------
-
-        # 保存按钮 (永远保持启用，以便用户保存"关闭同步"这个设置)
-        tk.Button(btn_frame, text="保存配置", command=self.save_cloud_settings,
-                  bg="#4a90e2", fg="white", relief="flat", padx=15).pack(side="right")
-
-        # 初始化时刷新一次状态
-        self.refresh_cloud_ui_state()
-
-    # --- 新增：刷新 UI 状态 (灰色/正常) ---
-    def refresh_cloud_ui_state(self):
-        is_enabled = self.var_ch_enabled.get()
-        state = "normal" if is_enabled else "disabled"
-
-        # 1. 禁用/启用输入框
-        for entry in self.entries.values():
-            entry.config(state=state)
-
-        # 2. 禁用/启用相关按钮
-        self.btn_test.config(state=state)
-        self.btn_push.config(state=state)
-
-        # (可选) 让 Save 按钮也能保存这个状态变化，这里不直接保存，等用户点保存按钮
-
-    def save_cloud_settings(self):
-        # 保存所有输入框 (即使禁用状态也能 get)
-        for key, entry in self.entries.items():
-            self.db.set_setting(key, entry.get().strip())
-
-        # 保存总开关状态
-        self.db.set_setting("ch_enabled", "1" if self.var_ch_enabled.get() else "0")
-
-        messagebox.showinfo("提示", "配置已保存。\n(如果是关闭同步，重启软件后完全生效)")
-
-    def test_cloud_conn(self):
-        # 先临时保存一下配置以便测试使用最新的值
-        for key, entry in self.entries.items():
-            self.db.set_setting(key, entry.get().strip())
-
-        success, msg = self.db.ch_manager.test_connection()
-        if success:
-            messagebox.showinfo("成功", msg)
-        else:
-            messagebox.showerror("失败", msg)
-
-    # --- 新增：推送历史回调 ---
-    def on_push_history(self):
-        # 1. 询问清除策略
-        choice = messagebox.askyesnocancel("同步策略",
-                                           "建议在推送前清空云端旧数据，以防止重复。\n\n"
-                                           "【是 (Yes)】：先清空云端，再上传本地所有记录 (推荐)\n"
-                                           "【否 (No)】 ：不清空，直接追加上传 (可能产生重复)\n"
-                                           "【取消】：取消操作")
-
-        if choice is None: return
-        clear_first = choice
-
-        # 2. 异步执行
-        def _run():
-            try:
-                # 传递 clear_first 参数
-                count = self.db.ch_manager.push_all_history(clear_first=clear_first)
-
-                msg = f"已成功推送 {count} 条历史记录到云端！"
-                if clear_first:
-                    msg = "云端旧数据已清洗。\n" + msg
-
-                self.after(0, lambda: messagebox.showinfo("成功", msg))
-            except Exception as e:
-                # --- [关键修复] ---
-                err_msg = str(e)
-                self.after(0, lambda: messagebox.showerror("失败", f"推送失败: {err_msg}"))
-
-        threading.Thread(target=_run, daemon=True).start()
+    def toggle_ssh_enabled(self):
+        val = "1" if self.var_ssh_enabled.get() else "0"
+        self.db.set_setting("ssh_enabled", val)
 
     def setup_general_ui(self):
         # 快捷键
