@@ -95,9 +95,11 @@ class SafeDraftApp:
         self.current_draft_id = None
         self.last_content = ""
 
-        # 仅主窗口自动加载历史，新建窗口保持空白
-        if self.is_main_window:
-            self.load_latest_draft()
+        # --- 核心修改点：取消启动时的自动填充 ---
+        # 原逻辑：仅主窗口自动加载历史，新建窗口保持空白
+        # 修改后：无论是否为主窗口，启动时均不加载最新草稿，保持输入框纯净
+        # if self.is_main_window:
+        #     self.load_latest_draft()
 
         # 6. 事件绑定 & 自动保存定时器
         self.auto_save_timer = None
@@ -243,6 +245,12 @@ class SafeDraftApp:
     def show_main_window(self):
         self.root.deiconify()
         self.root.lift()
+        # 修复：确保唤醒时遵循当前的置顶逻辑
+        is_top = self.root.attributes("-topmost")
+        self.root.attributes("-topmost", True)  # 强制刷一次置顶
+        if not is_top:
+            # 如果原本不是置顶状态，刷完后再恢复，以确保窗口能跳到最前面
+            self.root.after(10, lambda: self.root.attributes("-topmost", False))
         self.root.focus_force()
 
     def hide_main_window(self):
@@ -290,19 +298,24 @@ class SafeDraftApp:
     def toggle_manual_topmost(self):
         is_currently_top = self.root.attributes("-topmost")
 
+        # 清理现有的定时器，防止冲突
+        if self.topmost_timer:
+            self.root.after_cancel(self.topmost_timer)
+            self.topmost_timer = None
+
         if is_currently_top:
             self.root.attributes("-topmost", False)
-            if self.topmost_timer:
-                self.root.after_cancel(self.topmost_timer)
-                self.topmost_timer = None
+            # 修复：增加显式的颜色回退逻辑
             bg_color = self.colors.get("bg_btn_default", "#f0f0f0")
-            self.btn_top.config(text="📌 临时置顶", bg=bg_color, fg=self.colors["fg"])
+            self.btn_top.config(text="📌 临时置顶", bg=bg_color, fg=self.colors.get("fg", "black"))
         else:
             self.root.attributes("-topmost", True)
-            if self.topmost_timer:
-                self.root.after_cancel(self.topmost_timer)
-                self.topmost_timer = None
-            self.btn_top.config(text="📌 已强制锁定", bg="#4a90e2", fg="white")
+            # 修复：确保使用高亮色
+            active_bg = self.colors.get("btn_top_active", "#4a90e2")
+            self.btn_top.config(text="📌 已强制锁定", bg=active_bg, fg="white")
+
+        # 强制更新 idle 任务以刷新 UI
+        self.root.update_idletasks()
 
     def on_text_change(self, event):
         if self.text_area.edit_modified():
