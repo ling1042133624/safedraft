@@ -14,6 +14,8 @@ from utils import ThemeManager, StartupManager, get_icon_image, DEFAULT_FONT_SIZ
 from windows import HistoryWindow, SettingsDialog
 from notebook import NotebookWindow
 
+import ctypes  # <--- 新增导入 1
+
 
 class GlobalHotKeys:
     def __init__(self, app):
@@ -435,6 +437,16 @@ class SafeDraftApp:
 
 
 if __name__ == "__main__":
+    # --- 新增代码块 START ---
+    # 告诉 Windows 这是一个独立的应用程序，而不是通用的 Python 脚本
+    # 格式建议: "公司名.产品名.子模块.版本号"
+    myappid = 'ling.safedraft.app.v1.0'
+    try:
+        ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID(myappid)
+    except Exception as e:
+        print(f"Failed to set AppUserModelID: {e}")
+    # --- 新增代码块 END ---
+
     root = tk.Tk()
     app = SafeDraftApp(root)
     root.mainloop()
