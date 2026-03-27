@@ -14,12 +14,13 @@ class HistoryWindow(tk.Toplevel):
         super().__init__(parent)
         self.title("历史归档")
 
-        # 窗口大小
-        self.geometry("750x750")
+        # 窗口大小 - 加宽以容纳预览区
+        self.geometry("900x600")
 
         self.db = db
         self.restore_callback = restore_callback
         self.colors = theme
+        self.history_data = []  # 缓存历史数据
 
         val = self.db.get_setting("quick_restore", "0")
         self.quick_restore_var = tk.BooleanVar(value=(val == "1"))
@@ -54,7 +55,7 @@ class HistoryWindow(tk.Toplevel):
         top_bar = tk.Frame(self, bg=self.colors["bg"], pady=5)
         top_bar.pack(side="top", fill="x", padx=10)
 
-        lbl = tk.Label(top_bar, text="双击记录恢复 | 选中可删除", bg=self.colors["bg"], fg="#888888")
+        lbl = tk.Label(top_bar, text="单击预览 | 双击恢复到主窗口", bg=self.colors["bg"], fg="#888888")
         lbl.pack(side="left")
 
         # 2. 搜索栏
@@ -68,19 +69,47 @@ class HistoryWindow(tk.Toplevel):
                                      relief="flat", insertbackground=self.colors["list_fg"])
         self.entry_search.pack(side="left", fill="x", expand=True, padx=5)
 
-        # 3. 列表显示区
-        frame = tk.Frame(self, bg=self.colors["bg"])
-        frame.pack(fill="both", expand=True, padx=10, pady=(5, 5))
-        self.scrollbar = ttk.Scrollbar(frame, orient="vertical")
+        # 3. 主内容区（使用 PanedWindow 实现可拖动调整）
+        paned = tk.PanedWindow(self, orient="horizontal", bg=self.colors["bg"],
+                               sashwidth=8, sashrelief="raised", sashpad=2)
+        paned.pack(fill="both", expand=True, padx=10, pady=(5, 5))
 
+        # 左侧：列表区
+        left_frame = tk.Frame(paned, bg=self.colors["bg"])
+        left_frame.pack_propagate(False)
+
+        self.scrollbar = ttk.Scrollbar(left_frame, orient="vertical")
         list_font = ("Consolas", max(9, self.font_size - 2))
-        self.listbox = tk.Listbox(frame, bg=self.colors["list_bg"], fg=self.colors["list_fg"],
+        self.listbox = tk.Listbox(left_frame, bg=self.colors["list_bg"], fg=self.colors["list_fg"],
                                   relief="flat", highlightthickness=0, selectbackground="#4a90e2",
-                                  yscrollcommand=self.scrollbar.set, font=list_font)
+                                  yscrollcommand=self.scrollbar.set, font=list_font, width=35)
         self.scrollbar.config(command=self.listbox.yview)
         self.scrollbar.pack(side="right", fill="y")
         self.listbox.pack(side="left", fill="both", expand=True)
+
+        # 单击预览
+        self.listbox.bind("<<ListboxSelect>>", self.on_select_preview)
+        # 双击恢复
         self.listbox.bind("<Double-Button-1>", self.on_double_click)
+
+        # 右侧：预览区
+        right_frame = tk.Frame(paned, bg=self.colors["bg"])
+
+        # 预览区标题
+        preview_title = tk.Label(right_frame, text="📄 内容预览", bg=self.colors["bg"],
+                                 fg="#888888", font=("Arial", 10, "bold"), anchor="w")
+        preview_title.pack(fill="x", pady=(0, 5))
+
+        # 预览文本框
+        self.preview_text = tk.Text(right_frame, bg=self.colors["text_bg"], fg=self.colors["text_fg"],
+                                    relief="flat", wrap="word", font=("Consolas", self.font_size),
+                                    padx=10, pady=10)
+        self.preview_text.pack(fill="both", expand=True)
+        self.preview_text.config(state="disabled")  # 只读
+
+        # 添加到 PanedWindow
+        paned.add(left_frame, width=350, minsize=200)
+        paned.add(right_frame, minsize=300)
 
         # 4. 底部功能按钮区
         btn_frame = tk.Frame(self, bg=self.colors["bg"], pady=10)
@@ -92,6 +121,10 @@ class HistoryWindow(tk.Toplevel):
                                    command=self.on_toggle_quick_restore)
         chk_quick.pack(side="left")
 
+        # 恢复按钮
+        tk.Button(btn_frame, text="📥 恢复到主窗口", command=self.on_restore_clicked,
+                  bg="#4a90e2", fg="white", relief="flat", padx=8).pack(side="right", padx=2)
+
         # 按钮 A: 删除 (最右)
         tk.Button(btn_frame, text="🗑️ 删除", command=self.on_delete,
                   bg=self.colors["bg"], fg="#ff5555", relief="flat", padx=8,
@@ -100,12 +133,45 @@ class HistoryWindow(tk.Toplevel):
         # 按钮 B: 清理重复
         tk.Button(btn_frame, text="🧹 去重", command=self.on_deduplicate,
                   bg=self.colors["bg"], fg=self.colors["fg"], relief="flat", padx=8,
-                  activebackground=self.colors["accent"], activeforeground=self.colors["fg"]).pack(side="right",
-                                                                                                   padx=2)
+                  activebackground=self.colors["accent"], activeforeground=self.colors["fg"]).pack(side="right", padx=2)
 
         # 按钮 C: 存为笔记
         tk.Button(btn_frame, text="⭐ 存笔记", command=self.on_save_to_note,
                   bg="#f1c40f", fg="white", relief="flat", padx=8).pack(side="right", padx=2)
+
+    def on_select_preview(self, event):
+        """单击时在右侧预览区显示内容"""
+        selection = self.listbox.curselection()
+        if not selection:
+            return
+        index = selection[0]
+        if index >= len(self.history_data):
+            return
+        content = self.history_data[index][1]
+        self.show_preview(content)
+
+    def show_preview(self, content):
+        """在预览区显示内容"""
+        self.preview_text.config(state="normal")
+        self.preview_text.delete("1.0", "end")
+        self.preview_text.insert("1.0", content)
+        self.preview_text.config(state="disabled")
+
+    def on_restore_clicked(self):
+        """点击恢复按钮"""
+        selection = self.listbox.curselection()
+        if not selection:
+            messagebox.showinfo("提示", "请先选择一条记录")
+            return
+        index = selection[0]
+        if index >= len(self.history_data):
+            return
+        content = self.history_data[index][1]
+        if self.quick_restore_var.get():
+            self.restore_callback(content)
+        else:
+            if messagebox.askyesno("恢复确认", "确定要恢复到主窗口吗？"):
+                self.restore_callback(content)
 
     def on_deduplicate(self):
         if messagebox.askyesno("清理确认", "确定要扫描并删除所有内容重复的记录吗？\n\n仅保留最新的一条记录。"):
@@ -123,11 +189,9 @@ class HistoryWindow(tk.Toplevel):
         selection = self.listbox.curselection()
         if not selection: return
         index = selection[0]
-        keyword = self.search_var.get().strip()
-        history = self.db.get_history(keyword)
-        if index >= len(history): return
+        if index >= len(self.history_data): return
 
-        draft_id, content, created_at, _ = history[index]
+        draft_id, content, created_at, _ = self.history_data[index]
 
         # 1. 获取文件夹列表
         folders = self.db.get_folders()
@@ -254,12 +318,12 @@ class HistoryWindow(tk.Toplevel):
         if not self.winfo_exists(): return
         keyword = self.search_var.get().strip()
         self.listbox.delete(0, "end")
-        history_data = self.db.get_history(keyword)
-        if not history_data:
+        self.history_data = self.db.get_history(keyword)
+        if not self.history_data:
             display_text = "未找到相关记录" if keyword else "暂无历史记录"
             self.listbox.insert("end", display_text)
             return
-        for row in history_data:
+        for row in self.history_data:
             try:
                 dt = datetime.fromisoformat(row[3])
                 time_str = dt.strftime("%H:%M") if dt.date() == datetime.now().date() else dt.strftime("%m/%d %H:%M")
@@ -273,10 +337,8 @@ class HistoryWindow(tk.Toplevel):
         selection = self.listbox.curselection()
         if not selection: return
         index = selection[0]
-        keyword = self.search_var.get().strip()
-        history = self.db.get_history(keyword)
-        if index >= len(history): return
-        content = history[index][1]
+        if index >= len(self.history_data): return
+        content = self.history_data[index][1]
         if self.quick_restore_var.get():
             self.restore_callback(content)
         else:
@@ -287,11 +349,9 @@ class HistoryWindow(tk.Toplevel):
         selection = self.listbox.curselection()
         if not selection: return
         index = selection[0]
-        keyword = self.search_var.get().strip()
-        history = self.db.get_history(keyword)
-        if index >= len(history): return
+        if index >= len(self.history_data): return
         if messagebox.askyesno("确认删除", "确定要永久删除这条记录吗？"):
-            self.db.delete_draft(history[index][0])
+            self.db.delete_draft(self.history_data[index][0])
 
 
 class SettingsDialog(tk.Toplevel):
