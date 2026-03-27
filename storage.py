@@ -187,6 +187,182 @@ class StorageManager:
 
         self._notify_observers()
 
+    # --- Smart Merge Sync ---
+    def merge_database(self, other_db_path):
+        """
+        将另一个数据库的内容合并到当前数据库
+        - folders: 按 uuid 合并，保留 updated_at 最新
+        - notes: 按 uuid 合并，保留 updated_at 最新，处理软删除
+        - drafts: 按内容去重，保留 last_updated_at 最新
+        - triggers_v2: 按 (rule_type, value) 去重
+        """
+        if not os.path.exists(other_db_path):
+            return
+
+        # 连接临时数据库
+        other_conn = sqlite3.connect(other_db_path, check_same_thread=False)
+        other_cur = other_conn.cursor()
+
+        with self.lock:
+            try:
+                # 1. 合并 folders (按 uuid)
+                other_cur.execute('SELECT uuid, name, is_deleted, updated_at FROM folders')
+                for row in other_cur.fetchall():
+                    uuid_val, name, is_deleted, updated_at = row
+                    # 检查本地是否存在
+                    self.cursor.execute('SELECT updated_at, is_deleted FROM folders WHERE uuid = ?', (uuid_val,))
+                    local_row = self.cursor.fetchone()
+                    if local_row:
+                        # 比较 updated_at，保留较新的
+                        local_updated = local_row[0] or ""
+                        local_is_deleted = local_row[1]
+                        if updated_at > local_updated:
+                            # 远程更新，覆盖本地
+                            self.cursor.execute(
+                                'UPDATE folders SET name = ?, is_deleted = ?, updated_at = ? WHERE uuid = ?',
+                                (name, is_deleted, updated_at, uuid_val))
+                    else:
+                        # 本地不存在，直接插入
+                        self.cursor.execute(
+                            'INSERT OR IGNORE INTO folders (uuid, name, is_deleted, updated_at) VALUES (?, ?, ?, ?)',
+                            (uuid_val, name, is_deleted, updated_at))
+
+                # 2. 合并 notes (按 uuid)
+                other_cur.execute('SELECT uuid, folder_uuid, title, content, is_deleted, updated_at, source_draft_id FROM notes')
+                for row in other_cur.fetchall():
+                    uuid_val, folder_uuid, title, content, is_deleted, updated_at, source_draft_id = row
+                    self.cursor.execute('SELECT updated_at, is_deleted FROM notes WHERE uuid = ?', (uuid_val,))
+                    local_row = self.cursor.fetchone()
+                    if local_row:
+                        local_updated = local_row[0] or ""
+                        if updated_at > local_updated:
+                            self.cursor.execute('''UPDATE notes SET folder_uuid = ?, title = ?, content = ?,
+                                                   is_deleted = ?, updated_at = ?, source_draft_id = ? WHERE uuid = ?''',
+                                                (folder_uuid, title, content, is_deleted, updated_at, source_draft_id, uuid_val))
+                    else:
+                        self.cursor.execute('''INSERT OR IGNORE INTO notes (uuid, folder_uuid, title, content, is_deleted, updated_at, source_draft_id)
+                                               VALUES (?, ?, ?, ?, ?, ?, ?)''',
+                                            (uuid_val, folder_uuid, title, content, is_deleted, updated_at, source_draft_id))
+
+                # 3. 合并 drafts (按内容去重，保留 last_updated_at 最新)
+                other_cur.execute('SELECT content, created_at, last_updated_at FROM drafts')
+                for row in other_cur.fetchall():
+                    content, created_at, last_updated_at = row
+                    if not content or not content.strip():
+                        continue
+                    # 检查是否存在相同内容
+                    self.cursor.execute('SELECT id, last_updated_at FROM drafts WHERE content = ?', (content,))
+                    local_row = self.cursor.fetchone()
+                    if local_row:
+                        local_id, local_updated = local_row
+                        if last_updated_at > (local_updated or ""):
+                            # 远程更新，更新本地时间戳
+                            self.cursor.execute('UPDATE drafts SET last_updated_at = ? WHERE id = ?',
+                                                (last_updated_at, local_id))
+                    else:
+                        # 本地不存在该内容，插入
+                        self.cursor.execute('INSERT INTO drafts (content, created_at, last_updated_at) VALUES (?, ?, ?)',
+                                            (content, created_at, last_updated_at))
+
+                # 4. 合并 triggers_v2 (按 rule_type + value 去重)
+                other_cur.execute('SELECT rule_type, value, enabled FROM triggers_v2')
+                for row in other_cur.fetchall():
+                    rule_type, value, enabled = row
+                    self.cursor.execute('INSERT OR IGNORE INTO triggers_v2 (rule_type, value, enabled) VALUES (?, ?, ?)',
+                                        (rule_type, value, enabled))
+
+                self.conn.commit()
+
+            finally:
+                other_conn.close()
+
+        # 最终去重
+        self.deduplicate_drafts()
+        self._notify_observers()
+
+    def sync_upload_merge(self, server_ip, remote_path):
+        """
+        智能上传：先下载服务器数据，合并后再上传
+        1. 下载服务器数据库到临时文件
+        2. 将服务器数据合并到本地
+        3. 推送合并后的本地数据库到服务器
+        """
+        if not server_ip or not remote_path:
+            raise ValueError("配置不完整")
+
+        tmp_path = self.db_path + ".remote_tmp"
+
+        ssh = self._get_ssh_client(server_ip)
+        sftp = ssh.open_sftp()
+
+        try:
+            remote_file = f"{remote_path.rstrip('/')}/safedraft.db"
+
+            # 1. 尝试下载服务器数据库
+            try:
+                sftp.get(remote_file, tmp_path)
+                server_has_data = True
+            except FileNotFoundError:
+                # 服务器上没有数据，跳过合并
+                server_has_data = False
+            except Exception as e:
+                # 其他错误（如文件不存在但不是 FileNotFoundError）
+                server_has_data = os.path.exists(tmp_path)
+
+            # 2. 如果服务器有数据，合并到本地
+            if server_has_data and os.path.exists(tmp_path):
+                self.merge_database(tmp_path)
+                os.remove(tmp_path)
+
+            # 3. 上传合并后的本地数据库
+            with self.lock:
+                self.conn.commit()
+            sftp.put(self.db_path, remote_file)
+
+        finally:
+            if os.path.exists(tmp_path):
+                try:
+                    os.remove(tmp_path)
+                except:
+                    pass
+            sftp.close()
+            ssh.close()
+
+    def sync_download_merge(self, server_ip, remote_path):
+        """
+        智能下载：下载服务器数据，与本地合并
+        1. 下载服务器数据库到临时文件
+        2. 将服务器数据合并到本地
+        3. 通知观察者刷新 UI
+        """
+        if not server_ip or not remote_path:
+            raise ValueError("配置不完整")
+
+        tmp_path = self.db_path + ".remote_tmp"
+
+        ssh = self._get_ssh_client(server_ip)
+        sftp = ssh.open_sftp()
+
+        try:
+            remote_file = f"{remote_path.rstrip('/')}/safedraft.db"
+            sftp.get(remote_file, tmp_path)
+
+            # 合并服务器数据到本地
+            if os.path.exists(tmp_path):
+                self.merge_database(tmp_path)
+                os.remove(tmp_path)
+
+        except FileNotFoundError:
+            raise Exception("服务器上暂无同步数据")
+        finally:
+            if os.path.exists(tmp_path):
+                try:
+                    os.remove(tmp_path)
+                except:
+                    pass
+            sftp.close()
+            ssh.close()
+
     def add_observer(self, callback):
         if callback not in self._observers: self._observers.append(callback)
 
@@ -255,13 +431,16 @@ class StorageManager:
         self._notify_observers()
 
     def deduplicate_drafts(self):
+        """按内容去重，保留 last_updated_at 最新的记录"""
         with self.lock:
+            # 按 content 分组，保留每组中 last_updated_at 最大的记录
             self.cursor.execute('''
                 DELETE FROM drafts
                 WHERE id NOT IN (
-                    SELECT MAX(id)
-                    FROM drafts
-                    GROUP BY content
+                    SELECT id FROM (
+                        SELECT id, ROW_NUMBER() OVER (PARTITION BY content ORDER BY last_updated_at DESC) as rn
+                        FROM drafts
+                    ) WHERE rn = 1
                 )
             ''')
             deleted_count = self.cursor.rowcount

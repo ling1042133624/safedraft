@@ -180,8 +180,8 @@ class SafeDraftApp:
         if not ip or not path:
             messagebox.showerror("配置缺失", "请先在设置中填写服务器 IP 和路径。")
             return
-        if messagebox.askyesno("确认", "确定要上传当前数据覆盖服务器端吗？"):
-            self._run_async_sync(self.db.sync_upload, ip, path, "上传成功")
+        if messagebox.askyesno("确认", "将合并本地和服务器数据（自动去重），然后同步到服务器。\n确定继续吗？"):
+            self._run_async_sync(self.db.sync_upload_merge, ip, path, "上传成功（已合并去重）")
 
     def manual_download(self):
         if self.db.get_setting("ssh_enabled", "0") != "1":
@@ -189,8 +189,8 @@ class SafeDraftApp:
             return
         ip = self.db.get_setting("ssh_ip", "")
         path = self.db.get_setting("ssh_path", "")
-        if messagebox.askyesno("确认", "下载将覆盖本地所有数据（不可撤销）。\n确定继续吗？"):
-            self._run_async_sync(self.db.sync_download, ip, path, "下载成功，数据已重载")
+        if messagebox.askyesno("确认", "将下载服务器数据并与本地合并（自动去重）。\n确定继续吗？"):
+            self._run_async_sync(self.db.sync_download_merge, ip, path, "下载成功（已合并去重）")
 
     def _run_async_sync(self, func, ip, path, success_msg):
         def _worker():
