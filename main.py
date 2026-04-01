@@ -13,6 +13,7 @@ from watcher import WindowWatcher
 from utils import ThemeManager, StartupManager, get_icon_image, DEFAULT_FONT_SIZE
 from windows import HistoryWindow, SettingsDialog
 from notebook import NotebookWindow
+from sticky import StickyManagerWindow
 
 import ctypes  # <--- 新增导入 1
 
@@ -59,7 +60,7 @@ class SafeDraftApp:
 
         # 1. 窗口基础设置
         self.root.title("SafeDraft" if is_main_window else "SafeDraft (New)")
-        self.root.geometry("600x600")
+        self.root.geometry("750x600")
 
         # 图标
         self.load_icon()
@@ -150,10 +151,14 @@ class SafeDraftApp:
         self.btn_top.pack(side="right", padx=2)
 
         if self.is_main_window:
+            self.btn_sticky = tk.Button(self.toolbar, text="📝 便签", command=self.open_sticky_manager, relief="flat",
+                                        padx=5)
+            self.btn_sticky.pack(side="right", padx=2)
             self.btn_notebook = tk.Button(self.toolbar, text="📓 笔记", command=self.open_notebook, relief="flat",
                                           padx=5)
             self.btn_notebook.pack(side="right", padx=2)
         else:
+            self.btn_sticky = None
             self.btn_notebook = None
 
         self.btn_history = tk.Button(self.toolbar, text="🕒 历史归档", command=self.open_history, relief="flat",
@@ -391,6 +396,9 @@ class SafeDraftApp:
 
     def open_notebook(self):
         win = NotebookWindow(self.root, self.db, self.colors)
+
+    def open_sticky_manager(self):
+        win = StickyManagerWindow(self.root, self.db, self.colors)
 
     def open_settings(self):
         win = SettingsDialog(self.root, self.db, self.watcher, self)

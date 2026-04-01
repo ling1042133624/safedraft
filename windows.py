@@ -6,7 +6,7 @@ import os
 import threading
 
 # 导入工具模块
-from utils import get_icon_image, StartupManager, DEFAULT_FONT_SIZE
+from utils import get_icon_image, StartupManager, DEFAULT_FONT_SIZE, DEFAULT_STICKY_TITLE_SIZE, DEFAULT_STICKY_CONTENT_SIZE
 
 
 class HistoryWindow(tk.Toplevel):
@@ -384,6 +384,11 @@ class SettingsDialog(tk.Toplevel):
         self.notebook.add(self.page_general, text=" 常规设置 ")
         self.setup_general_ui()
 
+        # 便签设置
+        self.page_sticky = tk.Frame(self.notebook, bg=self.colors["bg"])
+        self.notebook.add(self.page_sticky, text=" 便签设置 ")
+        self.setup_sticky_ui()
+
     def load_icon(self):
         try:
             pil_img = get_icon_image()
@@ -606,3 +611,46 @@ class SettingsDialog(tk.Toplevel):
     def delete_rule(self, rid):
         if messagebox.askyesno("确认", "删除此规则？"): self.db.delete_trigger(
             rid); self.watcher.reload_rules(); self.load_rules()
+
+    def setup_sticky_ui(self):
+        f = tk.Frame(self.page_sticky, bg=self.colors["bg"], padx=20, pady=20)
+        f.pack(fill="both", expand=True)
+
+        tk.Label(f, text="便签字体设置",
+                 bg=self.colors["bg"], fg="#4a90e2", font=("Arial", 11, "bold")).pack(anchor="w", pady=(0, 15))
+
+        # 标题字体大小
+        frame_title = tk.Frame(f, bg=self.colors["bg"])
+        frame_title.pack(fill="x", pady=5)
+        tk.Label(frame_title, text="标题字体大小:", bg=self.colors["bg"], fg=self.colors["fg"]).pack(side="left")
+        try:
+            current_title_size = int(self.db.get_setting("sticky_title_size", str(DEFAULT_STICKY_TITLE_SIZE)))
+        except:
+            current_title_size = DEFAULT_STICKY_TITLE_SIZE
+        self.scale_sticky_title = tk.Scale(frame_title, from_=8, to=20, resolution=1, orient="horizontal",
+                                            bg=self.colors["bg"], fg=self.colors["fg"], highlightthickness=0,
+                                            activebackground=self.colors["accent"], bd=0, length=150,
+                                            command=self.on_sticky_title_change)
+        self.scale_sticky_title.set(current_title_size)
+        self.scale_sticky_title.pack(side="left", padx=10)
+
+        # 内容字体大小
+        frame_content = tk.Frame(f, bg=self.colors["bg"])
+        frame_content.pack(fill="x", pady=5)
+        tk.Label(frame_content, text="内容字体大小:", bg=self.colors["bg"], fg=self.colors["fg"]).pack(side="left")
+        try:
+            current_content_size = int(self.db.get_setting("sticky_content_size", str(DEFAULT_STICKY_CONTENT_SIZE)))
+        except:
+            current_content_size = DEFAULT_STICKY_CONTENT_SIZE
+        self.scale_sticky_content = tk.Scale(frame_content, from_=8, to=24, resolution=1, orient="horizontal",
+                                              bg=self.colors["bg"], fg=self.colors["fg"], highlightthickness=0,
+                                              activebackground=self.colors["accent"], bd=0, length=150,
+                                              command=self.on_sticky_content_change)
+        self.scale_sticky_content.set(current_content_size)
+        self.scale_sticky_content.pack(side="left", padx=10)
+
+    def on_sticky_title_change(self, value):
+        self.db.set_setting("sticky_title_size", value)
+
+    def on_sticky_content_change(self, value):
+        self.db.set_setting("sticky_content_size", value)

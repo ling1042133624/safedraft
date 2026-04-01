@@ -13,6 +13,13 @@ except ImportError:
 # --- 新增：默认字体大小 ---
 DEFAULT_FONT_SIZE = 12
 
+# --- 便签预设颜色 ---
+STICKY_COLORS = ['#fff9c4', '#ffccbc', '#c8e6c9', '#bbdefb', '#e1bee7', '#ffffff']
+
+# --- 便签默认字体大小 ---
+DEFAULT_STICKY_TITLE_SIZE = 9
+DEFAULT_STICKY_CONTENT_SIZE = 9
+
 # --- 主题定义 ---
 THEMES = {
     "Deep": {

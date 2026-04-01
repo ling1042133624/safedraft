@@ -95,6 +95,22 @@ class StorageManager:
                     source_draft_id INTEGER
                 )''')
 
+            # 便签系统表
+            self.cursor.execute('''CREATE TABLE IF NOT EXISTS stickynotes (
+                    uuid TEXT PRIMARY KEY,
+                    title TEXT DEFAULT '便签',
+                    content TEXT,
+                    color TEXT DEFAULT '#fff9c4',
+                    is_topmost INTEGER DEFAULT 0,
+                    position_x INTEGER,
+                    position_y INTEGER,
+                    width INTEGER DEFAULT 250,
+                    height INTEGER DEFAULT 200,
+                    is_deleted INTEGER DEFAULT 0,
+                    created_at TIMESTAMP,
+                    updated_at TIMESTAMP
+                )''')
+
             self.cursor.execute('SELECT count(*) FROM triggers_v2')
             if self.cursor.fetchone()[0] == 0:
                 self.cursor.executemany(
@@ -622,6 +638,81 @@ class StorageManager:
     def hard_delete_note(self, nid):
         with self.lock:
             self.cursor.execute('DELETE FROM notes WHERE uuid = ?', (nid,))
+            self.conn.commit()
+        self._notify_observers()
+
+    # ==========================
+    # 📝 Sticky Notes API
+    # ==========================
+    def create_sticky(self, title="便签", color="#fff9c4"):
+        sid = str(uuid.uuid4())
+        now = datetime.now().isoformat()
+        with self.lock:
+            self.cursor.execute('''INSERT INTO stickynotes
+                (uuid, title, content, color, is_topmost, position_x, position_y, width, height, is_deleted, created_at, updated_at)
+                VALUES (?, ?, '', ?, 0, NULL, NULL, 250, 200, 0, ?, ?)''',
+                (sid, title, color, now, now))
+            self.conn.commit()
+        self._notify_observers()
+        return sid
+
+    def get_all_stickies(self):
+        with self.lock:
+            self.cursor.execute('''SELECT uuid, title, content, color, is_topmost, position_x, position_y, width, height, created_at, updated_at
+                FROM stickynotes WHERE is_deleted = 0 ORDER BY updated_at DESC''')
+            return self.cursor.fetchall()
+
+    def get_sticky(self, uuid_val):
+        with self.lock:
+            self.cursor.execute('''SELECT uuid, title, content, color, is_topmost, position_x, position_y, width, height, created_at, updated_at
+                FROM stickynotes WHERE uuid = ? AND is_deleted = 0''', (uuid_val,))
+            return self.cursor.fetchone()
+
+    def update_sticky(self, uuid_val, title=None, content=None, color=None, is_topmost=None,
+                      position_x=None, position_y=None, width=None, height=None):
+        now = datetime.now().isoformat()
+        with self.lock:
+            updates = []
+            params = []
+            if title is not None:
+                updates.append("title = ?")
+                params.append(title)
+            if content is not None:
+                updates.append("content = ?")
+                params.append(content)
+            if color is not None:
+                updates.append("color = ?")
+                params.append(color)
+            if is_topmost is not None:
+                updates.append("is_topmost = ?")
+                params.append(1 if is_topmost else 0)
+            if position_x is not None:
+                updates.append("position_x = ?")
+                params.append(position_x)
+            if position_y is not None:
+                updates.append("position_y = ?")
+                params.append(position_y)
+            if width is not None:
+                updates.append("width = ?")
+                params.append(width)
+            if height is not None:
+                updates.append("height = ?")
+                params.append(height)
+
+            if updates:
+                updates.append("updated_at = ?")
+                params.append(now)
+                params.append(uuid_val)
+                sql = f"UPDATE stickynotes SET {', '.join(updates)} WHERE uuid = ?"
+                self.cursor.execute(sql, tuple(params))
+                self.conn.commit()
+        self._notify_observers()
+
+    def delete_sticky(self, uuid_val):
+        now = datetime.now().isoformat()
+        with self.lock:
+            self.cursor.execute('UPDATE stickynotes SET is_deleted = 1, updated_at = ? WHERE uuid = ?',
+                                (now, uuid_val))
             self.conn.commit()
         self._notify_observers()
 
