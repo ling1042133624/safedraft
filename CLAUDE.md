@@ -42,19 +42,21 @@ python -m nuitka --standalone --onefile --enable-plugin=tk-inter --macos-create-
 | File | Purpose |
 |------|---------|
 | `main.py` | Entry point. Contains `SafeDraftApp` (main GUI), `GlobalHotKeys` (keyboard shortcuts), and tray icon setup |
-| `storage.py` | `StorageManager` class - SQLite database operations for drafts, triggers, settings, and notebook data. Includes SSH sync via paramiko |
+| `storage.py` | `StorageManager` class - SQLite database operations for drafts, triggers, settings, and notebook data. Includes SSH smart merge sync via paramiko |
 | `watcher.py` | `WindowWatcher` class - Background thread monitoring active window title and process name against trigger rules |
-| `windows.py` | `HistoryWindow` (time machine/history browser) and `SettingsDialog` (settings tabs) |
+| `windows.py` | `HistoryWindow` (time machine/history browser with PanedWindow preview) and `SettingsDialog` (settings tabs) |
 | `notebook.py` | `NotebookWindow` - Three-pane notebook system with folders, notes list, and editor |
 | `utils.py` | `ThemeManager` (Deep/Light themes), `StartupManager` (Windows registry auto-start), icon loading |
 | `icon_data.py` | Base64 encoded application icon |
+| `save_his.py` | Utility to convert SafeDraft database to NoteGen format |
 
 ### Key Data Flow
 
 1. **Auto-save**: Text changes in main window trigger `on_text_change()` -> debounced 1s -> `perform_auto_save()` -> `StorageManager.save_content()`
 2. **Window Monitoring**: `WindowWatcher._loop()` runs every 1s, checks active window against `triggers_v2` table rules, calls callback on match
 3. **Draft Segmentation**: Time-based (10 min gap creates new record). Content with same `draft_id` updates existing record
-4. **SSH Sync**: Upload/download SQLite database file via SFTP. Download creates backup, validates, then replaces
+4. **SSH Smart Merge Sync**: Bidirectional merge via SFTP. Upload downloads remote DB first, merges+deduplicates both ways, then pushes. Download does same merge. See `merge_database()`, `sync_upload_merge()`, `sync_download_merge()` in `storage.py`
+5. **History Preview**: `HistoryWindow` uses `PanedWindow` for resizable left (list) / right (preview) layout. Single click shows content in preview pane, double click restores to main window
 
 ### Database Schema (SQLite - `safedraft.db`)
 
@@ -63,6 +65,15 @@ python -m nuitka --standalone --onefile --enable-plugin=tk-inter --macos-create-
 - `settings`: key, value
 - `folders`: uuid, name, is_deleted, updated_at
 - `notes`: uuid, folder_uuid, title, content, is_deleted, updated_at, source_draft_id
+
+### Merge Strategy (SSH Sync)
+
+| Table | Key | Merge Rule |
+|-------|-----|-----------|
+| `drafts` | content | Group by content, keep latest `last_updated_at` |
+| `notes` | uuid | Match by uuid, keep latest `updated_at` |
+| `folders` | uuid | Match by uuid, keep latest `updated_at` |
+| `triggers_v2` | (rule_type, value) | Insert if not exists |
 
 ### Platform Dependencies
 
@@ -77,3 +88,4 @@ python -m nuitka --standalone --onefile --enable-plugin=tk-inter --macos-create-
 - Auto-topmost timer: 2 minutes (`_start_auto_topmost` sets 120000ms timer)
 - Global hotkey `Ctrl+`` toggles main window visibility
 - Child windows share the same `StorageManager` instance via `existing_db` parameter
+- `HistoryWindow` caches query results in `self.history_data` to avoid repeated DB queries on click/delete/preview
