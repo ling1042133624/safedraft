@@ -287,6 +287,50 @@ class StorageManager:
                     self.cursor.execute('INSERT OR IGNORE INTO triggers_v2 (rule_type, value, enabled) VALUES (?, ?, ?)',
                                         (rule_type, value, enabled))
 
+                # 5. 合并 stickynotes (按 uuid 合并，保留 updated_at 最新；再按 content 去重)
+                other_cur.execute('''SELECT uuid, title, content, color, is_topmost, position_x, position_y,
+                                    width, height, is_deleted, created_at, updated_at FROM stickynotes''')
+                for row in other_cur.fetchall():
+                    (uuid_val, title, content, color, is_topmost, pos_x, pos_y, width, height,
+                     is_deleted, created_at, updated_at) = row
+                    # 检查本地是否存在相同 uuid
+                    self.cursor.execute('SELECT updated_at, is_deleted FROM stickynotes WHERE uuid = ?', (uuid_val,))
+                    local_row = self.cursor.fetchone()
+                    if local_row:
+                        local_updated = local_row[0] or ""
+                        if updated_at > local_updated:
+                            # 远程更新较新，覆盖本地
+                            self.cursor.execute('''UPDATE stickynotes SET title = ?, content = ?, color = ?,
+                                                  is_topmost = ?, position_x = ?, position_y = ?,
+                                                  width = ?, height = ?, is_deleted = ?, updated_at = ?
+                                                  WHERE uuid = ?''',
+                                                (title, content, color, is_topmost, pos_x, pos_y,
+                                                 width, height, is_deleted, updated_at, uuid_val))
+                    else:
+                        # 本地不存在该 uuid，检查是否有相同 content 的便签
+                        if content:
+                            self.cursor.execute('SELECT uuid, updated_at FROM stickynotes WHERE content = ?', (content,))
+                            dup_row = self.cursor.fetchone()
+                            if dup_row:
+                                # 存在相同 content，保留 updated_at 最新的
+                                dup_uuid, dup_updated = dup_row
+                                if updated_at > (dup_updated or ""):
+                                    # 远程较新，删除本地重复的，插入远程的
+                                    self.cursor.execute('DELETE FROM stickynotes WHERE uuid = ?', (dup_uuid,))
+                                    self.cursor.execute('''INSERT INTO stickynotes (uuid, title, content, color, is_topmost,
+                                                          position_x, position_y, width, height, is_deleted, created_at, updated_at)
+                                                          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)''',
+                                                        (uuid_val, title, content, color, is_topmost, pos_x, pos_y,
+                                                         width, height, is_deleted, created_at, updated_at))
+                                # 否则什么都不做，保留本地的
+                            else:
+                                # 没有重复，插入
+                                self.cursor.execute('''INSERT INTO stickynotes (uuid, title, content, color, is_topmost,
+                                                      position_x, position_y, width, height, is_deleted, created_at, updated_at)
+                                                      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)''',
+                                                    (uuid_val, title, content, color, is_topmost, pos_x, pos_y,
+                                                     width, height, is_deleted, created_at, updated_at))
+
                 self.conn.commit()
 
             finally:

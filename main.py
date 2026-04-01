@@ -60,7 +60,7 @@ class SafeDraftApp:
 
         # 1. 窗口基础设置
         self.root.title("SafeDraft" if is_main_window else "SafeDraft (New)")
-        self.root.geometry("750x600")
+        self.root.geometry("630x600")
 
         # 图标
         self.load_icon()
