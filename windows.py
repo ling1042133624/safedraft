@@ -15,7 +15,7 @@ class HistoryWindow(tk.Toplevel):
         self.title("历史归档")
 
         # 窗口大小 - 加宽以容纳预览区
-        self.geometry("900x600")
+        self.geometry("900x700")
 
         self.db = db
         self.restore_callback = restore_callback

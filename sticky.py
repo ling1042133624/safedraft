@@ -297,7 +297,7 @@ class StickyManagerWindow(tk.Toplevel):
         self.sticky_windows = {}
 
         self.title("便签管理")
-        self.geometry("500x400")
+        self.geometry("750x500")
         self.configure(bg=self.colors["bg"])
 
         self.setup_ui()
@@ -310,21 +310,26 @@ class StickyManagerWindow(tk.Toplevel):
         toolbar = tk.Frame(self, bg=self.colors["bg"], height=40)
         toolbar.pack(fill="x", padx=5, pady=5)
 
-        tk.Label(toolbar, text="便签列表", bg=self.colors["bg"], fg=self.colors["fg"],
-                 font=("Microsoft YaHei UI", 11, "bold")).pack(side="left", padx=5)
+        tk.Label(toolbar, text="单击预览 | 双击打开便签", bg=self.colors["bg"], fg="#888888",
+                 font=("Microsoft YaHei UI", 10)).pack(side="left", padx=5)
 
         btn_new = tk.Button(toolbar, text="+", relief="flat", bg=self.colors.get("accent", "#3c3c3c"),
                             fg=self.colors["fg"], font=("Arial", 14, "bold"), padx=10,
                             command=self.create_sticky)
         btn_new.pack(side="right", padx=5)
 
-        list_frame = tk.Frame(self, bg=self.colors["bg"])
-        list_frame.pack(fill="both", expand=True, padx=5, pady=5)
+        # 主内容区（使用 PanedWindow 实现可拖动调整）
+        paned = tk.PanedWindow(self, orient="horizontal", bg=self.colors["bg"],
+                               sashwidth=6, sashrelief="raised", sashpad=2)
+        paned.pack(fill="both", expand=True, padx=5, pady=(0, 5))
 
-        scrollbar = tk.Scrollbar(list_frame)
+        # 左侧：便签列表
+        left_frame = tk.Frame(paned, bg=self.colors["bg"])
+
+        scrollbar = tk.Scrollbar(left_frame)
         scrollbar.pack(side="right", fill="y")
 
-        self.listbox = tk.Listbox(list_frame, bg=self.colors.get("list_bg", "#252526"),
+        self.listbox = tk.Listbox(left_frame, bg=self.colors.get("list_bg", "#252526"),
                                    fg=self.colors.get("list_fg", "#e0e0e0"),
                                    selectbackground=self.colors.get("accent", "#3c3c3c"),
                                    font=("Microsoft YaHei UI", 10),
@@ -332,12 +337,63 @@ class StickyManagerWindow(tk.Toplevel):
         self.listbox.pack(fill="both", expand=True)
         scrollbar.config(command=self.listbox.yview)
 
+        # 单击预览
+        self.listbox.bind("<<ListboxSelect>>", self._on_select_preview)
+        # 双击打开
         self.listbox.bind("<Double-Button-1>", self._on_double_click)
+        # 右键菜单
         self.listbox.bind("<Button-3>", self._show_context_menu)
 
         self.context_menu = tk.Menu(self, tearoff=0)
         self.context_menu.add_command(label="打开", command=self._open_selected)
         self.context_menu.add_command(label="删除", command=self._delete_selected)
+
+        # 右侧：预览区
+        right_frame = tk.Frame(paned, bg=self.colors["bg"])
+
+        preview_title = tk.Label(right_frame, text="📄 内容预览", bg=self.colors["bg"],
+                                 fg="#888888", font=("Arial", 10, "bold"), anchor="w")
+        preview_title.pack(fill="x", pady=(0, 5))
+
+        self.preview_text = tk.Text(right_frame, bg=self.colors.get("text_bg", "#1e1e1e"),
+                                    fg=self.colors.get("text_fg", "#e0e0e0"),
+                                    relief="flat", wrap="word", font=("Microsoft YaHei UI", 10),
+                                    padx=10, pady=10)
+        self.preview_text.pack(fill="both", expand=True)
+        self.preview_text.config(state="disabled")
+
+        # 添加到 PanedWindow
+        paned.add(left_frame, width=280, minsize=200)
+        paned.add(right_frame, minsize=250)
+
+        # 底部按钮区
+        btn_frame = tk.Frame(self, bg=self.colors["bg"], pady=5)
+        btn_frame.pack(side="bottom", fill="x", padx=5)
+
+        tk.Button(btn_frame, text="🗑️ 删除", command=self._delete_selected,
+                  bg=self.colors["bg"], fg="#ff5555", relief="flat", padx=8).pack(side="right", padx=2)
+        tk.Button(btn_frame, text="📂 打开便签", command=self._open_selected,
+                  bg=self.colors.get("accent", "#3c3c3c"), fg=self.colors["fg"], relief="flat", padx=8).pack(side="right", padx=2)
+
+    def _on_select_preview(self, event):
+        """单击时在右侧预览区显示内容"""
+        selection = self.listbox.curselection()
+        if not selection:
+            return
+        idx = selection[0]
+        if idx >= len(self.sticky_data):
+            return
+        row = self.sticky_data[idx]
+        uuid_val, title, content, color, is_topmost, pos_x, pos_y, w, h, created, updated = row
+        self.show_preview(title, content)
+
+    def show_preview(self, title, content):
+        """在预览区显示内容"""
+        self.preview_text.config(state="normal")
+        self.preview_text.delete("1.0", "end")
+        display = f"【{title}】\n\n{content or '(空)'}"
+        self.preview_text.insert("1.0", display)
+        self.preview_text.config(state="disabled")
 
     def load_stickies(self):
         self.listbox.delete(0, tk.END)
