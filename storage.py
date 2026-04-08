@@ -5,6 +5,8 @@ import threading
 import uuid
 import time
 import shutil
+import hashlib
+import glob
 from datetime import datetime, timedelta
 import paramiko
 
@@ -377,7 +379,25 @@ class StorageManager:
             # 3. 上传合并后的本地数据库
             with self.lock:
                 self.conn.commit()
+
+            # 4. 更新本地 MD5 状态文件
+            md5_hash = self.update_md5_status()
+
             sftp.put(self.db_path, remote_file)
+
+            # 5. 删除远程旧的 md5 状态文件
+            remote_base = remote_path.rstrip('/')
+            for fname in sftp.listdir(remote_base):
+                if fname.startswith("safedraft_") and fname.endswith(".md5"):
+                    try:
+                        sftp.remove(f"{remote_base}/{fname}")
+                    except:
+                        pass
+
+            # 6. 上传新的 md5 状态文件
+            local_status = os.path.join(self.base_path, f"safedraft_{md5_hash}.md5")
+            remote_md5 = f"{remote_base}/safedraft_{md5_hash}.md5"
+            sftp.put(local_status, remote_md5)
 
         finally:
             if os.path.exists(tmp_path):
@@ -412,6 +432,9 @@ class StorageManager:
                 self.merge_database(tmp_path)
                 os.remove(tmp_path)
 
+            # 合并后更新本地 md5 状态文件
+            self.update_md5_status()
+
         except FileNotFoundError:
             raise Exception("服务器上暂无同步数据")
         finally:
@@ -435,6 +458,41 @@ class StorageManager:
                 cb()
             except:
                 pass
+
+    # --- MD5 状态文件 ---
+    def calculate_db_md5(self):
+        """计算本地数据库文件的 MD5 值"""
+        with self.lock:
+            self.conn.commit()
+        md5 = hashlib.md5()
+        with open(self.db_path, 'rb') as f:
+            for chunk in iter(lambda: f.read(8192), b''):
+                md5.update(chunk)
+        return md5.hexdigest()
+
+    def update_md5_status(self):
+        """计算 MD5，删除旧的 safedraft_*.md5，创建新的状态文件，返回 hash"""
+        md5_hash = self.calculate_db_md5()
+        # 删除旧的本地状态文件
+        for old in glob.glob(os.path.join(self.base_path, "safedraft_*.md5")):
+            try:
+                os.remove(old)
+            except:
+                pass
+        # 创建新的状态文件（内容为空，文件名含 hash）
+        status_path = os.path.join(self.base_path, f"safedraft_{md5_hash}.md5")
+        with open(status_path, 'w') as f:
+            pass  # 空文件
+        return md5_hash
+
+    def get_local_md5(self):
+        """从本地状态文件名提取 MD5，不存在返回空字符串"""
+        matches = glob.glob(os.path.join(self.base_path, "safedraft_*.md5"))
+        if not matches:
+            return ""
+        name = os.path.basename(matches[0])
+        # 文件名格式: safedraft_{hash}.md5
+        return name[len("safedraft_"):-len(".md5")]
 
     # --- 设置 ---
     def get_setting(self, key, default=None):

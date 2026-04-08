@@ -14,6 +14,7 @@ from utils import ThemeManager, StartupManager, get_icon_image, DEFAULT_FONT_SIZ
 from windows import HistoryWindow, SettingsDialog
 from notebook import NotebookWindow
 from sticky import StickyManagerWindow
+from autosync import AutoSyncManager
 
 import ctypes  # <--- 新增导入 1
 
@@ -82,6 +83,8 @@ class SafeDraftApp:
             self.watcher = WindowWatcher(self.db, self.on_trigger)
             self.watcher.start()
             self.hotkeys = GlobalHotKeys(self)
+            self.auto_sync = AutoSyncManager(self.db, on_sync_complete=lambda msg: self.root.after(0, lambda: self.show_toast(msg)))
+            self.auto_sync.start()
 
             self.setup_tray()
 
@@ -275,6 +278,7 @@ class SafeDraftApp:
     def exit_app(self):
         if self.watcher: self.watcher.stop()
         if self.hotkeys: self.hotkeys.stop()
+        if hasattr(self, 'auto_sync'): self.auto_sync.stop()
         if hasattr(self, 'tray_icon'): self.tray_icon.stop()
         self.db.close()
         self.root.quit()
@@ -376,7 +380,64 @@ class SafeDraftApp:
             self.last_content = latest[1]
 
     def on_db_update(self):
-        pass
+        try:
+            self.db.update_md5_status()
+        except:
+            pass
+
+    def show_toast(self, message, duration=3000):
+        """显示自动消失的气泡提示，出现在主窗口右下角"""
+        try:
+            sw = self.root.winfo_screenwidth()
+            sh = self.root.winfo_screenheight()
+        except:
+            sw, sh = 800, 600
+
+        win = tk.Toplevel(self.root)
+        win.overrideredirect(True)
+        win.attributes("-topmost", True)
+
+        # 窗口宽高
+        ww, wh = 220, 40
+        # 位置：主窗口右下角偏移
+        try:
+            mw = self.root.winfo_width()
+            mh = self.root.winfo_height()
+            mx = self.root.winfo_x()
+            my = self.root.winfo_y()
+            x = mx + mw - ww - 10
+            y = my + mh - wh - 10
+        except:
+            x = sw - ww - 10
+            y = sh - wh - 10
+
+        win.geometry(f"{ww}x{wh}+{x}+{y}")
+
+        # 样式
+        frame = tk.Frame(win, bg="#2d2d2d", relief="solid", bd=1)
+        frame.pack(fill="both", expand=True)
+        label = tk.Label(frame, text=message, bg="#2d2d2d", fg="#ffffff",
+                         font=("Arial", 10), anchor="center", justify="center")
+        label.pack(fill="both", expand=True, padx=10, pady=5)
+
+        # 自动关闭
+        win.after(duration, win.destroy)
+
+        # 淡出效果
+        def fade_out(win, alpha=1.0):
+            if alpha <= 0:
+                try:
+                    win.destroy()
+                except:
+                    pass
+                return
+            try:
+                win.attributes("-alpha", alpha)
+                win.after(80, lambda: fade_out(win, alpha - 0.15))
+            except:
+                pass
+
+        win.after(duration - 500, lambda: fade_out(win))
 
     def restore_draft(self, content):
         self.text_area.delete("1.0", "end")

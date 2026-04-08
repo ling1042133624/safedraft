@@ -38,3 +38,8 @@ Thumbs.db
 SafeDraft.exe
 .db
 .claude
+
+# Auto-sync
+sync_config.json
+safedraft_*.md5
+safedraft.db

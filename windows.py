@@ -4,6 +4,7 @@ from datetime import datetime
 from PIL import ImageTk
 import os
 import threading
+import json
 
 # 导入工具模块
 from utils import get_icon_image, StartupManager, DEFAULT_FONT_SIZE, DEFAULT_STICKY_TITLE_SIZE, DEFAULT_STICKY_CONTENT_SIZE
@@ -437,6 +438,122 @@ class SettingsDialog(tk.Toplevel):
 
         tk.Label(f, text="* 请确保本地已配置 SSH 公钥免密登录到服务器。\n* 启用后，主界面将显示上传/下载按钮。",
                  bg=self.colors["bg"], fg="#888888", justify="left").pack(anchor="w", pady=20)
+
+        # --- 自动同步设置 ---
+        ttk.Separator(f, orient="horizontal").pack(fill="x", pady=15)
+
+        tk.Label(f, text="自动同步设置",
+                 bg=self.colors["bg"], fg="#4a90e2", font=("Arial", 11, "bold")).pack(anchor="w", pady=(0, 10))
+
+        config = self._load_sync_config()
+
+        # 启用自动同步
+        self.var_auto_sync = tk.BooleanVar(value=config.get("auto_sync_enabled", False))
+        chk_auto = tk.Checkbutton(f, text="启用自动同步",
+                                  variable=self.var_auto_sync,
+                                  bg=self.colors["bg"], fg=self.colors["fg"],
+                                  selectcolor=self.colors["accent"],
+                                  activebackground=self.colors["bg"],
+                                  activeforeground=self.colors["fg"])
+        chk_auto.pack(anchor="w", pady=(0, 10))
+
+        # 时间段
+        time_frame = tk.Frame(f, bg=self.colors["bg"])
+        time_frame.pack(fill="x", pady=5)
+
+        tk.Label(time_frame, text="活跃时间段:", bg=self.colors["bg"],
+                 fg=self.colors["fg"]).grid(row=0, column=0, sticky="w", pady=5)
+
+        tk.Label(time_frame, text="开始:", bg=self.colors["bg"],
+                 fg=self.colors["fg"]).grid(row=0, column=1, padx=(10, 2))
+        self.entry_sync_start = tk.Entry(time_frame, width=6,
+                                        bg=self.colors["list_bg"], fg=self.colors["list_fg"],
+                                        insertbackground=self.colors["fg"])
+        self.entry_sync_start.insert(0, config.get("active_time_start", "09:00"))
+        self.entry_sync_start.grid(row=0, column=2, pady=5)
+
+        tk.Label(time_frame, text="结束:", bg=self.colors["bg"],
+                 fg=self.colors["fg"]).grid(row=0, column=3, padx=(10, 2))
+        self.entry_sync_end = tk.Entry(time_frame, width=6,
+                                       bg=self.colors["list_bg"], fg=self.colors["list_fg"],
+                                       insertbackground=self.colors["fg"])
+        self.entry_sync_end.insert(0, config.get("active_time_end", "22:00"))
+        self.entry_sync_end.grid(row=0, column=4, pady=5)
+
+        # 间隔
+        interval_frame = tk.Frame(f, bg=self.colors["bg"])
+        interval_frame.pack(fill="x", pady=5)
+
+        tk.Label(interval_frame, text="检查间隔(分钟):", bg=self.colors["bg"],
+                 fg=self.colors["fg"]).pack(side="left")
+        self.spin_interval = tk.Spinbox(interval_frame, from_=5, to=60, increment=5, width=5,
+                                        bg=self.colors["list_bg"], fg=self.colors["list_fg"])
+        self.spin_interval.delete(0, "end")
+        self.spin_interval.insert(0, str(config.get("sync_interval_minutes", 10)))
+        self.spin_interval.pack(side="left", padx=10)
+
+        # 保存按钮
+        tk.Button(f, text="保存自动同步配置", command=self._save_sync_config,
+                  bg="#4a90e2", fg="white", relief="flat", padx=10).pack(anchor="w", pady=15)
+
+        tk.Label(f, text="* 自动同步需要先启用SSH同步并正确配置服务器信息。\n"
+                         "* 活跃时间段格式: HH:MM (24小时制)，留空表示全天候。",
+                 bg=self.colors["bg"], fg="#888888", justify="left").pack(anchor="w")
+
+    def _load_sync_config(self):
+        """读取 sync_config.json"""
+        config_path = os.path.join(self.db.base_path, "sync_config.json")
+        if os.path.exists(config_path):
+            try:
+                with open(config_path, 'r', encoding='utf-8') as f:
+                    return json.load(f)
+            except:
+                pass
+        return {
+            "auto_sync_enabled": False,
+            "sync_interval_minutes": 10,
+            "active_time_start": "09:00",
+            "active_time_end": "22:00"
+        }
+
+    def _save_sync_config(self):
+        """保存自动同步配置到 JSON 文件"""
+        # 验证时间格式
+        start_str = self.entry_sync_start.get().strip()
+        end_str = self.entry_sync_end.get().strip()
+        for val, name in [(start_str, "开始时间"), (end_str, "结束时间")]:
+            if val:
+                try:
+                    parts = val.split(":")
+                    if len(parts) != 2:
+                        raise ValueError
+                    h, m = int(parts[0]), int(parts[1])
+                    if not (0 <= h <= 23 and 0 <= m <= 59):
+                        raise ValueError
+                except (ValueError, IndexError):
+                    messagebox.showerror("格式错误", f"{name}格式应为 HH:MM（如 09:00）")
+                    return
+
+        # 验证间隔
+        try:
+            interval = int(self.spin_interval.get())
+            if not (1 <= interval <= 120):
+                raise ValueError
+        except ValueError:
+            messagebox.showerror("格式错误", "检查间隔应为 1-120 之间的整数")
+            return
+
+        config = {
+            "auto_sync_enabled": self.var_auto_sync.get(),
+            "sync_interval_minutes": interval,
+            "active_time_start": start_str,
+            "active_time_end": end_str
+        }
+
+        config_path = os.path.join(self.db.base_path, "sync_config.json")
+        with open(config_path, 'w', encoding='utf-8') as f:
+            json.dump(config, f, indent=2, ensure_ascii=False)
+        messagebox.showinfo("成功", "自动同步配置已保存")
 
     def toggle_ssh_enabled(self):
         val = "1" if self.var_ssh_enabled.get() else "0"
