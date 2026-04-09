@@ -110,23 +110,30 @@ class AutoSyncManager:
             if not server_ip or not remote_path:
                 return
 
-            # 3. 计算当前本地 DB 的 MD5
+            # 3. 计算当前本地 DB 的 MD5（实时计算）
             current_md5 = self.db.calculate_db_md5()
 
-            # 4. 从本地状态文件名取记录的 hash
+            # 4. 获取本地状态文件中记录的 hash（上次成功同步后的值）
             local_recorded_md5 = self.db.get_local_md5()
 
             # 5. 从远端目录 readdir 取 hash
             remote_md5 = self._get_remote_md5(server_ip, remote_path)
 
             # 6. 判断是否需要同步：
-            #    - 当前 DB hash != 记录中的 hash（本地有未记录的变化）
-            #    - 或 远端 hash != 本地记录的 hash（远端有变化）
-            if current_md5 != local_recorded_md5 or remote_md5 != local_recorded_md5:
-                self.db.sync_upload_merge(server_ip, remote_path)
-                # 同步成功后触发回调
-                if self._on_sync_complete:
-                    self._on_sync_complete("自动同步完成")
+            #    只有本地有未同步的更新时才上传（current_md5 != local_recorded_md5）
+            if current_md5 == local_recorded_md5:
+                # 本地没有未同步的更新，远端有新数据时由 sync_upload_merge 处理
+                return
+
+            # 远端没有数据或远端数据与本地相同，无需上传
+            if not remote_md5 or remote_md5 == current_md5:
+                return
+
+            # 7. 需要上传合并
+            self.db.sync_upload_merge(server_ip, remote_path)
+            # 同步成功后触发回调
+            if self._on_sync_complete:
+                self._on_sync_complete("自动同步完成")
 
         except Exception:
             # 后台任务，异常静默

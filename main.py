@@ -380,10 +380,8 @@ class SafeDraftApp:
             self.last_content = latest[1]
 
     def on_db_update(self):
-        try:
-            self.db.update_md5_status()
-        except:
-            pass
+        # 不在此更新状态文件，状态文件只在成功上传/下载后更新
+        pass
 
     def show_toast(self, message, duration=3000):
         """显示自动消失的气泡提示，出现在主窗口右下角"""
