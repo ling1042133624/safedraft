@@ -569,9 +569,13 @@ class StorageManager:
     def get_history(self, keyword=None):
         with self.lock:
             if keyword:
+                # 支持多关键词空格分隔，所有关键词必须同时匹配（AND 逻辑）
+                keywords = keyword.split()
+                conditions = " AND ".join(["content LIKE ?" for _ in keywords])
+                params = [f"%{kw}%" for kw in keywords]
                 self.cursor.execute(
-                    'SELECT id, content, created_at, last_updated_at FROM drafts WHERE content LIKE ? ORDER BY last_updated_at DESC',
-                    (f"%{keyword}%",))
+                    f'SELECT id, content, created_at, last_updated_at FROM drafts WHERE {conditions} ORDER BY last_updated_at DESC',
+                    params)
             else:
                 self.cursor.execute(
                     'SELECT id, content, created_at, last_updated_at FROM drafts ORDER BY last_updated_at DESC')

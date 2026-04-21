@@ -9,9 +9,8 @@ COLORS = [
     "#ff9eb5",  # 粉色
     "#d1a3ff",  # 紫色
     "#9edcff",  # 浅蓝
-    "#b0b0b0"  # 灰色
+    "#b0b0b0"   # 灰色
 ]
-
 
 class StickyNote(tk.Toplevel):
     def __init__(self):
@@ -23,11 +22,11 @@ class StickyNote(tk.Toplevel):
         self.title_bg = self.darken_color(self.current_bg)
         self.border_w = 8
 
-        # 初始化拖动相关变量
-        self._drag_x = None
-        self._drag_y = None
-        self._win_x = None
-        self._win_y = None
+        # 拖动变量
+        self._drag_x = 0
+        self._drag_y = 0
+        self._win_x = 0
+        self._win_y = 0
 
         self.main_container = tk.Frame(self, bg=self.current_bg, bd=0)
         self.main_container.pack(fill=tk.BOTH, expand=True)
@@ -36,7 +35,7 @@ class StickyNote(tk.Toplevel):
         self.create_content_area()
         self.bind_resize_events()
 
-        # 显示在任务栏（Windows 专用）
+        # 显示在任务栏 + Windows 11 样式修复
         self.update_idletasks()
         hwnd = windll.user32.GetParent(self.winfo_id())
         style = windll.user32.GetWindowLongW(hwnd, -20)
@@ -45,18 +44,15 @@ class StickyNote(tk.Toplevel):
         self.apply_color(self.current_bg)
 
     def create_title_bar(self):
-        # 标题栏 Frame（统一背景）
         self.title_bar = tk.Frame(self.main_container, bg=self.title_bg, height=42)
         self.title_bar.pack(fill=tk.X, side=tk.TOP, padx=0, pady=0)
 
-        # 标题文字
         self.title_label = tk.Label(
             self.title_bar, text="便签", bg=self.title_bg, fg="#212121",
             font=("微软雅黑", 10, "bold"), anchor="w", padx=15
         )
         self.title_label.pack(side=tk.LEFT, fill=tk.Y, expand=True)
 
-        # 按钮容器（背景与标题栏完全一致）
         self.btn_frame = tk.Frame(self.title_bar, bg=self.title_bg)
         self.btn_frame.pack(side=tk.RIGHT, padx=8)
 
@@ -78,13 +74,13 @@ class StickyNote(tk.Toplevel):
                                    command=self.destroy)
         self.close_btn.pack(side=tk.LEFT, padx=3)
 
-        # ====================== 让整个标题栏都能拖动（关键修复） ======================
+        # ====================== 拖动绑定（关键修复） ======================
         drag_widgets = [
             self.title_bar, self.title_label, self.btn_frame,
             self.new_btn, self.color_btn, self.min_btn, self.close_btn
         ]
         for widget in drag_widgets:
-            widget.bind("<Button-1>", self.start_move)
+            widget.bind("<ButtonPress-1>", self.start_move)      # 使用 ButtonPress-1 更稳定
             widget.bind("<B1-Motion>", self.do_move)
             widget.bind("<Double-Button-1>", lambda e: self.toggle_maximize())
 
@@ -103,8 +99,6 @@ class StickyNote(tk.Toplevel):
 
         self.main_container.config(bg=self.current_bg)
         self.text_area.config(bg=self.current_bg)
-
-        # 标题栏和按钮区统一颜色
         self.title_bar.config(bg=self.title_bg)
         self.btn_frame.config(bg=self.title_bg)
         self.title_label.config(bg=self.title_bg)
@@ -123,7 +117,7 @@ class StickyNote(tk.Toplevel):
     def show_color_palette(self):
         pal = tk.Toplevel(self)
         pal.overrideredirect(True)
-        pal.geometry(f"280x65+{self.winfo_x() + 40}+{self.winfo_y() + 50}")
+        pal.geometry(f"280x65+{self.winfo_x()+40}+{self.winfo_y()+50}")
 
         f = tk.Frame(pal, bg="#f5f5f5", relief="solid", bd=1)
         f.pack(fill=tk.BOTH, expand=True, padx=8, pady=8)
@@ -140,24 +134,18 @@ class StickyNote(tk.Toplevel):
         self.apply_color(color)
         pal.destroy()
 
-    # ====================== 修复后的拖动方法（使用全局坐标，彻底解决无法拖动问题） ======================
+    # ====================== 纯手动拖动（Windows 11 稳定版） ======================
     def start_move(self, event):
-        """记录按下时的全局鼠标坐标和窗口位置"""
         self._drag_x = event.x_root
         self._drag_y = event.y_root
         self._win_x = self.winfo_x()
         self._win_y = self.winfo_y()
 
     def do_move(self, event):
-        """根据鼠标移动距离计算新窗口位置"""
-        if self._drag_x is None or self._win_x is None:
-            return
         dx = event.x_root - self._drag_x
         dy = event.y_root - self._drag_y
-
         new_x = self._win_x + dx
         new_y = self._win_y + dy
-
         self.geometry(f"+{new_x}+{new_y}")
 
     def minimize_win(self):
@@ -172,14 +160,14 @@ class StickyNote(tk.Toplevel):
             self.normal_geo = self.geometry()
             sw = self.winfo_screenwidth()
             sh = self.winfo_screenheight()
-            self.geometry(f"{sw}x{sh - 60}+0+0")
+            self.geometry(f"{sw}x{sh-60}+0+0")
             self.is_max = True
 
     def new_note(self):
         note = StickyNote()
         note.geometry(f"360x460+{random.randint(100, 800)}+{random.randint(80, 400)}")
 
-    # ====================== 边缘缩放（保持原逻辑） ======================
+    # ====================== 边缘缩放（保持不变） ======================
     def bind_resize_events(self):
         self.bind("<Motion>", self.update_cursor)
         self.bind("<Button-1>", self.start_resize, add="+")
@@ -189,9 +177,9 @@ class StickyNote(tk.Toplevel):
         x, y = event.x, event.y
         w, h = self.winfo_width(), self.winfo_height()
         b = self.border_w + 4
-        if (x < b and y < b) or (x > w - b and y > h - b):
+        if (x < b and y < b) or (x > w-b and y > h-b):
             self.config(cursor="size_nw_se")
-        elif (x < b and y > h - b) or (x > w - b and y < b):
+        elif (x < b and y > h-b) or (x > w-b and y < b):
             self.config(cursor="size_ne_sw")
         elif x < b or x > w - b:
             self.config(cursor="size_we")
