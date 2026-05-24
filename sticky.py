@@ -1,6 +1,6 @@
 import tkinter as tk
-from tkinter import colorchooser
-from utils import STICKY_COLORS
+from tkinter import colorchooser, messagebox
+from utils import STICKY_COLORS, TextSearchBar
 
 
 class StickyNoteWindow(tk.Toplevel):
@@ -49,7 +49,7 @@ class StickyNoteWindow(tk.Toplevel):
 
     def setup_ui(self, title, content):
         # 顶部栏（与便签同色）
-        self.header = tk.Frame(self, bg=self.sticky_color, height=30)
+        self.header = tk.Frame(self, bg=self.sticky_color, height=36)
         self.header.pack(fill="x")
         self.header.pack_propagate(False)
 
@@ -62,7 +62,7 @@ class StickyNoteWindow(tk.Toplevel):
         self.title_label = tk.Label(self.header, textvariable=self.title_var, bg=self.sticky_color,
                                     fg="#333", font=("Microsoft YaHei UI", self.title_font_size, "bold"),
                                     cursor="hand2")
-        self.title_label.pack(side="left", padx=5, pady=2)
+        self.title_label.pack(side="left", padx=5, pady=3)
         self.title_label.bind("<Double-Button-1>", self._edit_title)
 
         # 按钮容器
@@ -162,8 +162,9 @@ class StickyNoteWindow(tk.Toplevel):
         self._resize_start_y = event.y_root
         self._start_width = self.winfo_width()
         self._start_height = self.winfo_height()
+        self._start_pos_x = self.winfo_x()
+        self._start_pos_y = self.winfo_y()
         self._resize_side = side
-        self._start_geom = self.geometry()
 
     def _do_resize(self, event, side):
         dx = event.x_root - self._resize_start_x
@@ -171,19 +172,19 @@ class StickyNoteWindow(tk.Toplevel):
 
         new_width = self._start_width
         new_height = self._start_height
-        new_x = self.winfo_x()
-        new_y = self.winfo_y()
+        new_x = self._start_pos_x
+        new_y = self._start_pos_y
 
         if side == 'e':
             new_width = max(150, self._start_width + dx)
         elif side == 'w':
             new_width = max(150, self._start_width - dx)
-            new_x = self._start_width - new_width + self.winfo_x()
+            new_x = self._start_pos_x + (self._start_width - new_width)
         elif side == 's':
             new_height = max(100, self._start_height + dy)
         elif side == 'n':
             new_height = max(100, self._start_height - dy)
-            new_y = self._start_height - new_height + self.winfo_y()
+            new_y = self._start_pos_y + (self._start_height - new_height)
 
         self.geometry(f"{new_width}x{new_height}+{new_x}+{new_y}")
 
@@ -198,7 +199,7 @@ class StickyNoteWindow(tk.Toplevel):
         dy = event.y_root - self._resize_start_y
         new_width = max(150, self._start_width + dx)
         new_height = max(100, self._start_height + dy)
-        self.geometry(f"{new_width}x{new_height}")
+        self.geometry(f"{new_width}x{new_height}+{self.winfo_x()}+{self.winfo_y()}")
 
     def _edit_title(self, event):
         # 创建编辑框
@@ -318,6 +319,17 @@ class StickyManagerWindow(tk.Toplevel):
                             command=self.create_sticky)
         btn_new.pack(side="right", padx=5)
 
+        # 底部按钮区（必须在 paned 之前 pack，否则会被撑出屏幕）
+        btn_frame = tk.Frame(self, bg=self.colors["bg"], pady=5)
+        btn_frame.pack(side="bottom", fill="x", padx=5)
+
+        tk.Button(btn_frame, text="🗑️ 删除", command=self._delete_selected,
+                  bg=self.colors["bg"], fg="#ff5555", relief="flat", padx=8).pack(side="right", padx=2)
+        tk.Button(btn_frame, text="📂 打开便签", command=self._open_selected,
+                  bg=self.colors.get("accent", "#3c3c3c"), fg=self.colors["fg"], relief="flat", padx=8).pack(side="right", padx=2)
+        tk.Button(btn_frame, text="🔄 重置位置", command=self._reset_sticky_position,
+                  bg=self.colors["bg"], fg=self.colors["fg"], relief="flat", padx=8).pack(side="right", padx=2)
+
         # 主内容区（使用 PanedWindow 实现可拖动调整）
         paned = tk.PanedWindow(self, orient="horizontal", bg=self.colors["bg"],
                                sashwidth=6, sashrelief="raised", sashpad=2)
@@ -362,18 +374,17 @@ class StickyManagerWindow(tk.Toplevel):
         self.preview_text.pack(fill="both", expand=True)
         self.preview_text.config(state="disabled")
 
+        # Ctrl+F 搜索
+        self.search_bar = TextSearchBar(right_frame, self.preview_text, self.colors,
+                                        read_only=True, pack_before=self.preview_text)
+        self.bind("<Control-f>", self.search_bar.open)
+        self.bind("<Control-F>", self.search_bar.open)
+        self.preview_text.bind("<Control-f>", self.search_bar.open)
+        self.preview_text.bind("<Control-F>", self.search_bar.open)
+
         # 添加到 PanedWindow
         paned.add(left_frame, width=280, minsize=200)
         paned.add(right_frame, minsize=250)
-
-        # 底部按钮区
-        btn_frame = tk.Frame(self, bg=self.colors["bg"], pady=5)
-        btn_frame.pack(side="bottom", fill="x", padx=5)
-
-        tk.Button(btn_frame, text="🗑️ 删除", command=self._delete_selected,
-                  bg=self.colors["bg"], fg="#ff5555", relief="flat", padx=8).pack(side="right", padx=2)
-        tk.Button(btn_frame, text="📂 打开便签", command=self._open_selected,
-                  bg=self.colors.get("accent", "#3c3c3c"), fg=self.colors["fg"], relief="flat", padx=8).pack(side="right", padx=2)
 
     def _on_select_preview(self, event):
         """单击时在右侧预览区显示内容"""
@@ -467,6 +478,34 @@ class StickyManagerWindow(tk.Toplevel):
                     except:
                         pass
                     del self.sticky_windows[uuid_val]
+
+    def _reset_sticky_position(self):
+        """重置选中便签的位置和大小为默认值"""
+        selection = self.listbox.curselection()
+        if not selection:
+            messagebox.showinfo("提示", "请先选择一个便签")
+            return
+        idx = selection[0]
+        if idx >= len(self.sticky_data):
+            return
+        uuid_val = self.sticky_data[idx][0]
+        # 计算屏幕中央位置
+        sw = self.winfo_screenwidth()
+        sh = self.winfo_screenheight()
+        default_w, default_h = 250, 200
+        pos_x = (sw - default_w) // 2
+        pos_y = (sh - default_h) // 2
+        # 重置数据库中的位置和大小
+        self.db.update_sticky(uuid_val, position_x=pos_x, position_y=pos_y,
+                              width=default_w, height=default_h)
+        # 如果便签窗口已打开，重置窗口位置和大小
+        if uuid_val in self.sticky_windows:
+            win = self.sticky_windows[uuid_val]
+            try:
+                win.geometry(f"{default_w}x{default_h}+{pos_x}+{pos_y}")
+            except:
+                pass
+        messagebox.showinfo("提示", "便签位置和大小已重置。")
 
     def _on_db_change(self):
         self.load_stickies()

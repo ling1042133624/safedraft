@@ -10,7 +10,7 @@ from pynput import keyboard
 # 项目内模块
 from storage import StorageManager
 from watcher import WindowWatcher
-from utils import ThemeManager, StartupManager, get_icon_image, DEFAULT_FONT_SIZE
+from utils import ThemeManager, StartupManager, get_icon_image, DEFAULT_FONT_SIZE, TextSearchBar
 from windows import HistoryWindow, SettingsDialog
 from notebook import NotebookWindow
 from sticky import StickyManagerWindow
@@ -168,13 +168,32 @@ class SafeDraftApp:
                                      padx=5)
         self.btn_history.pack(side="right", padx=2)
 
-        self.text_frame = tk.Frame(self.root, padx=5, pady=5)
+        self.text_frame = tk.Frame(self.root, padx=5, pady=5, bg=self.colors["bg"])
         self.text_frame.pack(fill="both", expand=True)
 
-        self.text_area = tk.Text(self.text_frame, relief="flat",
+        # 编辑器区域（grid 布局用于滚动条自动隐藏）
+        self.editor_frame = tk.Frame(self.text_frame, bg=self.colors["bg"])
+        self.editor_frame.pack(fill="both", expand=True)
+        self.editor_frame.columnconfigure(0, weight=1)
+        self.editor_frame.rowconfigure(0, weight=1)
+
+        self.text_area = tk.Text(self.editor_frame, relief="flat",
                                  font=("Consolas", self.font_size),
-                                 undo=True, wrap="word", padx=10, pady=10)
-        self.text_area.pack(fill="both", expand=True)
+                                 undo=True, wrap="word", padx=10, pady=10,
+                                 yscrollcommand=self._on_text_scroll)
+        self.text_area.grid(row=0, column=0, sticky="nsew")
+
+        self.scrollbar = tk.Scrollbar(self.editor_frame, orient="vertical", command=self.text_area.yview)
+        self.scrollbar.grid(row=0, column=1, sticky="ns")
+        self.scrollbar.grid_remove()
+
+        # Ctrl+F 搜索
+        self.search_bar = TextSearchBar(self.text_frame, self.text_area, self.colors,
+                                        pack_before=self.editor_frame)
+        self.root.bind("<Control-f>", self.search_bar.open)
+        self.root.bind("<Control-F>", self.search_bar.open)
+        self.text_area.bind("<Control-f>", self.search_bar.open)
+        self.text_area.bind("<Control-F>", self.search_bar.open)
 
         self.apply_theme_colors()
 
@@ -328,6 +347,14 @@ class SafeDraftApp:
         # 强制更新 idle 任务以刷新 UI
         self.root.update_idletasks()
 
+    def _on_text_scroll(self, first, last):
+        """自动隐藏/显示滚动条"""
+        if float(first) <= 0.0 and float(last) >= 1.0:
+            self.scrollbar.grid_remove()
+        else:
+            self.scrollbar.grid()
+        self.scrollbar.set(first, last)
+
     def on_text_change(self, event):
         if self.text_area.edit_modified():
             content = self.text_area.get("1.0", "end-1c")
@@ -467,6 +494,7 @@ class SafeDraftApp:
         self.root.configure(bg=c["bg"])
         self.toolbar.configure(bg=c["bg"])
         self.text_frame.configure(bg=c["bg"])
+        self.editor_frame.configure(bg=c["bg"])
         self.text_area.configure(bg=c["text_bg"], fg=c["text_fg"], insertbackground=c["text_fg"])
 
         # 按钮样式通用

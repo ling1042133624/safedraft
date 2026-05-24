@@ -5,7 +5,7 @@ from PIL import ImageTk
 import threading
 
 # 导入工具
-from utils import get_icon_image, DEFAULT_FONT_SIZE
+from utils import get_icon_image, DEFAULT_FONT_SIZE, TextSearchBar
 
 
 class NotebookWindow(tk.Toplevel):
@@ -138,6 +138,14 @@ class NotebookWindow(tk.Toplevel):
         self.text_content.pack(fill="both", expand=True)
         self.text_content.bind("<KeyRelease>", self.on_content_change)
         self.text_content.bind("<Control-s>", self.manual_save)
+
+        # Ctrl+F 搜索
+        self.search_bar = TextSearchBar(self.frame_right, self.text_content, self.colors,
+                                        pack_before=self.text_content)
+        self.bind("<Control-f>", self.search_bar.open)
+        self.bind("<Control-F>", self.search_bar.open)
+        self.text_content.bind("<Control-f>", self.search_bar.open)
+        self.text_content.bind("<Control-F>", self.search_bar.open)
 
         # --- 底部栏 (状态 + 动态按钮组) ---
         self.bottom_bar = tk.Frame(self.frame_right, bg=self.colors["bg"])
@@ -361,16 +369,6 @@ class NotebookWindow(tk.Toplevel):
             self.current_folder_uuid = None
             self.load_notes_list()
 
-    def delete_current_note(self):
-        if not self.current_note_uuid: return
-
-        if messagebox.askyesno("删除确认", "确定要将这条笔记移入回收站吗？"):
-            # 数据库删除
-            self.db.delete_note(self.current_note_uuid)
-
-            # 刷新列表 (会自动触发 toggle_editor(False) 清空右侧)
-            self.load_notes_list()
-            messagebox.showinfo("提示", "笔记已删除")
     # --- 笔记列表逻辑 ---
 
     def load_notes_list(self):

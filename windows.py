@@ -39,6 +39,130 @@ class HistoryWindow(tk.Toplevel):
         self.db.add_observer(self.refresh_data)
         self.protocol("WM_DELETE_WINDOW", self.on_close)
 
+    def _open_search(self, event=None):
+        """打开预览区搜索栏"""
+        self.search_bar.pack(fill="x", pady=(2, 0), before=self.preview_text)
+        self.search_entry.delete(0, "end")
+        self.search_entry.focus_set()
+        self.search_count_label.config(text="")
+        self._search_matches = []
+        self._search_index = -1
+        # 清除之前的搜索高亮
+        self.preview_text.config(state="normal")
+        self.preview_text.tag_remove("search_highlight", "1.0", "end")
+        self.preview_text.config(state="disabled")
+        self._search_trace_cbname = self.search_var_preview.trace_add("write", self._on_search_input)
+        return "break"
+
+    def _on_search_input(self, *args):
+        """搜索输入变化时重新搜索"""
+        self._do_search()
+        self._goto_first_match()
+
+    def _do_search(self):
+        """执行搜索，记录所有匹配位置"""
+        keyword = self.search_var_preview.get()
+        self.preview_text.config(state="normal")
+        self.preview_text.tag_remove("search_highlight", "1.0", "end")
+        self.preview_text.config(state="disabled")
+
+        self._search_matches = []
+        self._search_index = -1
+
+        if not keyword:
+            self.search_count_label.config(text="")
+            return
+
+        content = self.preview_text.get("1.0", "end-1c")
+        start = 0
+        while True:
+            idx = content.find(keyword, start)
+            if idx == -1:
+                break
+            self._search_matches.append(idx)
+            start = idx + 1
+
+        # 应用高亮
+        self.preview_text.config(state="normal")
+        self.preview_text.tag_configure("search_highlight", background="#f39c12", foreground="white")
+        for pos in self._search_matches:
+            start_idx = f"1.0+{pos}c"
+            end_idx = f"1.0+{pos + len(keyword)}c"
+            self.preview_text.tag_add("search_highlight", start_idx, end_idx)
+        self.preview_text.config(state="disabled")
+
+        count = len(self._search_matches)
+        self.search_count_label.config(text=f"{count} 个结果" if count > 0 else "无结果")
+
+    def _goto_first_match(self):
+        """跳转到第一个匹配"""
+        if self._search_matches:
+            self._search_index = 0
+            self._highlight_current_match()
+        else:
+            self._search_index = -1
+
+    def _search_next(self, event=None):
+        """下一个匹配"""
+        if not self._search_matches:
+            if self.search_var_preview.get():
+                self._do_search()
+            return "break"
+        if self._search_matches:
+            self._search_index = (self._search_index + 1) % len(self._search_matches)
+            self._highlight_current_match()
+        return "break"
+
+    def _search_prev(self, event=None):
+        """上一个匹配"""
+        if not self._search_matches:
+            if self.search_var_preview.get():
+                self._do_search()
+            return "break"
+        if self._search_matches:
+            self._search_index = (self._search_index - 1) % len(self._search_matches)
+            self._highlight_current_match()
+        return "break"
+
+    def _highlight_current_match(self):
+        """高亮当前匹配项并滚动到可见位置"""
+        if self._search_index < 0 or self._search_index >= len(self._search_matches):
+            return
+        keyword = self.search_var_preview.get()
+        if not keyword:
+            return
+
+        self.preview_text.config(state="normal")
+        self.preview_text.tag_remove("search_current", "1.0", "end")
+        self.preview_text.tag_configure("search_current", background="#e74c3c", foreground="white")
+
+        pos = self._search_matches[self._search_index]
+        start_idx = f"1.0+{pos}c"
+        end_idx = f"1.0+{pos + len(keyword)}c"
+        self.preview_text.tag_add("search_current", start_idx, end_idx)
+        self.preview_text.see(start_idx)
+        self.preview_text.config(state="disabled")
+
+        self.search_count_label.config(
+            text=f"{self._search_index + 1}/{len(self._search_matches)}")
+
+    def _close_search(self, event=None):
+        """关闭搜索栏"""
+        if hasattr(self, '_search_trace_cbname') and self._search_trace_cbname:
+            try:
+                self.search_var_preview.trace_remove("write", self._search_trace_cbname)
+            except:
+                pass
+            self._search_trace_cbname = None
+        self.search_bar.pack_forget()
+        self.preview_text.config(state="normal")
+        self.preview_text.tag_remove("search_highlight", "1.0", "end")
+        self.preview_text.tag_remove("search_current", "1.0", "end")
+        self.preview_text.config(state="disabled")
+        self._search_matches = []
+        self._search_index = -1
+        return "break"
+
     def on_close(self):
         self.db.remove_observer(self.refresh_data)
         self.destroy()
@@ -107,6 +231,39 @@ class HistoryWindow(tk.Toplevel):
                                     padx=10, pady=10)
         self.preview_text.pack(fill="both", expand=True)
         self.preview_text.config(state="disabled")  # 只读
+
+        # 预览区搜索栏（默认隐藏）
+        self.search_bar = tk.Frame(right_frame, bg=self.colors["bg"])
+        self.search_var_preview = tk.StringVar()
+        self.search_entry = tk.Entry(self.search_bar, textvariable=self.search_var_preview,
+                                     bg=self.colors["list_bg"], fg=self.colors["list_fg"],
+                                     insertbackground=self.colors["list_fg"], relief="flat", width=20)
+        self.search_entry.pack(side="left", padx=2)
+        self.search_entry.bind("<Return>", self._search_next)
+        self.search_entry.bind("<Shift-Return>", self._search_prev)
+        self.search_entry.bind("<Escape>", self._close_search)
+
+        self.search_count_label = tk.Label(self.search_bar, text="", bg=self.colors["bg"],
+                                           fg="#888888", font=("Arial", 9))
+        self.search_count_label.pack(side="left", padx=5)
+
+        tk.Button(self.search_bar, text="▲", command=self._search_prev, relief="flat", padx=4,
+                  bg=self.colors["bg"], fg=self.colors["fg"], font=("Arial", 8)).pack(side="left")
+        tk.Button(self.search_bar, text="▼", command=self._search_next, relief="flat", padx=4,
+                  bg=self.colors["bg"], fg=self.colors["fg"], font=("Arial", 8)).pack(side="left")
+        tk.Button(self.search_bar, text="×", command=self._close_search, relief="flat", padx=4,
+                  bg=self.colors["bg"], fg="#ff5555", font=("Arial", 10)).pack(side="left")
+
+        # 搜索状态
+        self._search_matches = []
+        self._search_index = -1
+
+        # Ctrl+F 绑定
+        self.bind("<Control-f>", self._open_search)
+        self.bind("<Control-F>", self._open_search)
+        self.bind("<F3>", self._search_next)
+        self.preview_text.bind("<Control-f>", self._open_search)
+        self.preview_text.bind("<Control-F>", self._open_search)
 
         # 添加到 PanedWindow
         paned.add(left_frame, width=350, minsize=200)
