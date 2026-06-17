@@ -669,6 +669,43 @@ class SettingsDialog(tk.Toplevel):
                          "* 活跃时间段格式: HH:MM (24小时制)，留空表示全天候。",
                  bg=self.colors["bg"], fg="#888888", justify="left").pack(anchor="w")
 
+        # --- 强制推送（覆盖远程） ---
+        ttk.Separator(f, orient="horizontal").pack(fill="x", pady=15)
+
+        tk.Label(f, text="强制推送（覆盖远程）",
+                 bg=self.colors["bg"], fg="#e74c3c",
+                 font=("Arial", 11, "bold")).pack(anchor="w", pady=(0, 5))
+
+        tk.Button(f, text="⬆️ 强制推送（覆盖远程）",
+                  command=self.on_force_push,
+                  bg="#e74c3c", fg="white", relief="flat", padx=10).pack(anchor="w", pady=5)
+
+        tk.Label(f, text="* 此操作会用本地数据库完全覆盖远程。\n"
+                         "* 推送前会自动备份远程现有数据为 safedraft.db.bak.YYYYMMDD_HHMMSS。\n"
+                         "* 不会合并任何数据。",
+                 bg=self.colors["bg"], fg="#888888", justify="left").pack(anchor="w")
+
+    def on_force_push(self):
+        if self.db.get_setting("ssh_enabled", "0") != "1":
+            messagebox.showerror("未启用", "请先勾选'启用服务器同步功能'")
+            return
+        ip = self.db.get_setting("ssh_ip", "")
+        path = self.db.get_setting("ssh_path", "")
+        if not ip or not path:
+            messagebox.showerror("配置不完整", "请先填写服务器 IP 和远程目录路径")
+            return
+        if not messagebox.askyesno(
+            "危险操作确认",
+            "此操作会用本地数据库完全覆盖远程数据。\n\n"
+            "远程现有数据将被备份为 safedraft.db.bak.YYYYMMDD_HHMMSS。\n"
+            "此操作不可撤销。确定继续？"
+        ):
+            return
+        self.app._run_async_sync(
+            self.db.force_push_overwrite, ip, path,
+            "强制推送成功（远程已覆盖并备份）"
+        )
+
     def _load_sync_config(self):
         """读取 sync_config.json"""
         config_path = os.path.join(self.db.base_path, "sync_config.json")
