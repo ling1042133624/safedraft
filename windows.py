@@ -739,7 +739,7 @@ class SettingsDialog(tk.Toplevel):
         frame_theme = tk.Frame(self.page_general, bg=self.colors["bg"], pady=20)
         frame_theme.pack(fill="x", padx=20)
         tk.Label(frame_theme, text="界面主题:", bg=self.colors["bg"], fg=self.colors["fg"]).pack(side="left")
-        current_theme = self.db.get_setting("theme", "Deep")
+        current_theme = self.db.get_setting("theme", "Light")
         self.combo_theme = ttk.Combobox(frame_theme, values=["Deep", "Light"], state="readonly", width=10)
         self.combo_theme.set(current_theme)
         self.combo_theme.pack(side="left", padx=10)

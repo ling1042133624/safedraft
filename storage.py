@@ -118,7 +118,7 @@ class StorageManager:
                 self.cursor.executemany(
                     'INSERT OR IGNORE INTO triggers_v2 (rule_type, value, enabled) VALUES (?, ?, ?)', DEFAULT_TRIGGERS)
 
-            self.cursor.execute('INSERT OR IGNORE INTO settings (key, value) VALUES (?, ?)', ("theme", "Deep"))
+            self.cursor.execute('INSERT OR IGNORE INTO settings (key, value) VALUES (?, ?)', ("theme", "Light"))
             self.conn.commit()
 
     # --- SSH Sync Features ---

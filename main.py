@@ -68,7 +68,7 @@ class SafeDraftApp:
 
         # 2. 主题初始化
         self.theme_manager = ThemeManager()
-        self.current_theme_name = self.db.get_setting("theme", "Deep")
+        self.current_theme_name = self.db.get_setting("theme", "Light")
         self.colors = self.theme_manager.get_theme(self.current_theme_name)
         self.root.configure(bg=self.colors["bg"])
 
