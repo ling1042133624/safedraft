@@ -362,7 +362,7 @@ class SafeDraftApp:
                 self.last_content = content
                 if self.auto_save_timer:
                     self.root.after_cancel(self.auto_save_timer)
-                self.auto_save_timer = self.root.after(1000, self.perform_auto_save)
+                self.auto_save_timer = self.root.after(15000, self.perform_auto_save)
             self.text_area.edit_modified(False)
 
     def on_ctrl_s(self, event):
