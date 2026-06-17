@@ -446,6 +446,55 @@ class StorageManager:
             sftp.close()
             ssh.close()
 
+    def force_push_overwrite(self, server_ip, remote_path):
+        """强制推送：用本地 DB 完全覆盖远程。
+        1. 远程现有 safedraft.db 备份为 safedraft.db.bak.YYYYMMDD_HHMMSS
+        2. 上传本地 safedraft.db 覆盖远程
+        3. 更新本地 MD5 状态文件
+        4. 删除远程所有旧 safedraft_*.md5
+        5. 上传新的 safedraft_{hash}.md5
+        """
+        if not server_ip or not remote_path:
+            raise ValueError("配置不完整")
+
+        ssh = self._get_ssh_client(server_ip)
+        sftp = ssh.open_sftp()
+
+        try:
+            remote_base = remote_path.rstrip('/')
+            remote_file = f"{remote_base}/safedraft.db"
+
+            try:
+                sftp.stat(remote_file)
+                backup_name = f"safedraft.db.bak.{datetime.now().strftime('%Y%m%d_%H%M%S')}"
+                remote_backup = f"{remote_base}/{backup_name}"
+                sftp.rename(remote_file, remote_backup)
+            except FileNotFoundError:
+                pass
+            except IOError:
+                pass
+
+            with self.lock:
+                self.conn.commit()
+            sftp.put(self.db_path, remote_file)
+
+            md5_hash = self.update_md5_status()
+
+            for fname in sftp.listdir(remote_base):
+                if fname.startswith("safedraft_") and fname.endswith(".md5"):
+                    try:
+                        sftp.remove(f"{remote_base}/{fname}")
+                    except Exception:
+                        pass
+
+            local_status = os.path.join(self.base_path, f"safedraft_{md5_hash}.md5")
+            remote_md5 = f"{remote_base}/safedraft_{md5_hash}.md5"
+            sftp.put(local_status, remote_md5)
+
+        finally:
+            sftp.close()
+            ssh.close()
+
     def add_observer(self, callback):
         if callback not in self._observers: self._observers.append(callback)
 
