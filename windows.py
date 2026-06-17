@@ -749,7 +749,7 @@ class SettingsDialog(tk.Toplevel):
         frame_alpha = tk.Frame(self.page_general, bg=self.colors["bg"], pady=10)
         frame_alpha.pack(fill="x", padx=20)
         tk.Label(frame_alpha, text="窗口透明度:", bg=self.colors["bg"], fg=self.colors["fg"]).pack(side="left")
-        current_alpha = float(self.db.get_setting("window_alpha", "0.95"))
+        current_alpha = float(self.db.get_setting("window_alpha", "1.0"))
         self.scale_alpha = tk.Scale(frame_alpha, from_=0.2, to=1.0, resolution=0.05, orient="horizontal",
                                     bg=self.colors["bg"], fg=self.colors["fg"], highlightthickness=0,
                                     activebackground=self.colors["accent"], bd=0, length=200,
@@ -776,7 +776,7 @@ class SettingsDialog(tk.Toplevel):
         frame_exit = tk.Frame(self.page_general, bg=self.colors["bg"], pady=20)
         frame_exit.pack(fill="x", padx=20)
         tk.Label(frame_exit, text="关闭主窗口时:", bg=self.colors["bg"], fg=self.colors["fg"]).pack(side="left")
-        current_exit = self.db.get_setting("exit_action", "ask")
+        current_exit = self.db.get_setting("exit_action", "tray")
         self.combo_exit = ttk.Combobox(frame_exit, values=["ask", "tray", "quit"], state="readonly", width=10)
         self.exit_map = {"ask": "每次询问", "tray": "最小化到托盘", "quit": "退出程序"}
         self.exit_map_rev = {v: k for k, v in self.exit_map.items()}
@@ -814,7 +814,7 @@ class SettingsDialog(tk.Toplevel):
         # 1. 全局开关
         frame_master = tk.Frame(self.page_rules, bg=self.colors["bg"], pady=10)
         frame_master.pack(fill="x", padx=10)
-        current_master = self.db.get_setting("master_monitor", "1")
+        current_master = self.db.get_setting("master_monitor", "0")
         self.var_master = tk.BooleanVar(value=(current_master == "1"))
         cb_master = tk.Checkbutton(frame_master, text="启用智能感知 (自动弹出)", variable=self.var_master,
                                    bg=self.colors["bg"], fg=self.colors["fg"], selectcolor=self.colors["accent"],

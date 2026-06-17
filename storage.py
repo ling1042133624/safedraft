@@ -12,19 +12,19 @@ import paramiko
 
 # 默认触发器配置
 DEFAULT_TRIGGERS = [
-    ("title", "ChatGPT", 1),
-    ("title", "Claude", 1),
-    ("title", "DeepSeek", 1),
-    ("title", "Gemini", 1),
-    ("title", "Copilot", 1),
-    ("title", "文心一言", 1),
-    ("title", "通义千问", 1),
-    ("title", "Kimi", 1),
-    ("process", "winword.exe", 1),
-    ("process", "wps.exe", 1),
-    ("process", "notepad.exe", 1),
-    ("process", "feishu.exe", 1),
-    ("process", "dingtalk.exe", 1),
+    ("title", "ChatGPT", 0),
+    ("title", "Claude", 0),
+    ("title", "DeepSeek", 0),
+    ("title", "Gemini", 0),
+    ("title", "Copilot", 0),
+    ("title", "文心一言", 0),
+    ("title", "通义千问", 0),
+    ("title", "Kimi", 0),
+    ("process", "winword.exe", 0),
+    ("process", "wps.exe", 0),
+    ("process", "notepad.exe", 0),
+    ("process", "feishu.exe", 0),
+    ("process", "dingtalk.exe", 0),
 ]
 
 
@@ -75,7 +75,7 @@ class StorageManager:
                 )''')
             self.cursor.execute('''CREATE TABLE IF NOT EXISTS triggers_v2 (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    rule_type TEXT, value TEXT, enabled INTEGER DEFAULT 1,
+                    rule_type TEXT, value TEXT, enabled INTEGER DEFAULT 0,
                     UNIQUE(rule_type, value)
                 )''')
             self.cursor.execute('''CREATE TABLE IF NOT EXISTS settings (key TEXT PRIMARY KEY, value TEXT)''')
@@ -607,7 +607,7 @@ class StorageManager:
 
     def add_trigger(self, rtype, val):
         with self.lock:
-            self.cursor.execute('INSERT OR IGNORE INTO triggers_v2 (rule_type, value, enabled) VALUES (?, ?, 1)',
+            self.cursor.execute('INSERT OR IGNORE INTO triggers_v2 (rule_type, value, enabled) VALUES (?, ?, 0)',
                                 (rtype, val))
             self.conn.commit()
 
