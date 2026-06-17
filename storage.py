@@ -566,6 +566,51 @@ class StorageManager:
         self._notify_observers()
         return deleted_count
 
+    def deduplicate_drafts_superset(self):
+        """删除被其它记录包含的子集记录，以及空白记录。
+        严格大小写、不 strip；空白记录直接删除。
+        返回删除条数。"""
+        with self.lock:
+            self.cursor.execute('SELECT id, content FROM drafts ORDER BY id ASC')
+            rows = self.cursor.fetchall()
+
+            to_delete = set()
+            non_blank = []
+
+            for rid, content in rows:
+                if content is None or content.strip() == "":
+                    to_delete.add(rid)
+                else:
+                    non_blank.append((rid, content))
+
+            n = len(non_blank)
+            for i in range(n):
+                id_a, content_a = non_blank[i]
+                if id_a in to_delete:
+                    continue
+                for j in range(n):
+                    if i == j:
+                        continue
+                    id_b, content_b = non_blank[j]
+                    if id_b in to_delete:
+                        continue
+                    if content_a != content_b and content_a in content_b:
+                        to_delete.add(id_a)
+                        break
+
+            if to_delete:
+                placeholders = ",".join("?" * len(to_delete))
+                self.cursor.execute(
+                    f'DELETE FROM drafts WHERE id IN ({placeholders})',
+                    tuple(to_delete),
+                )
+                self.conn.commit()
+
+            deleted_count = len(to_delete)
+
+        self._notify_observers()
+        return deleted_count
+
     def get_history(self, keyword=None):
         with self.lock:
             if keyword:
