@@ -332,13 +332,25 @@ class HistoryWindow(tk.Toplevel):
                 self.restore_callback(content)
 
     def on_deduplicate(self):
-        if messagebox.askyesno("清理确认", "确定要扫描并删除所有内容重复的记录吗？\n\n仅保留最新的一条记录。"):
+        if messagebox.askyesno(
+            "清理确认",
+            "确定要扫描并清理重复记录吗？\n\n"
+            "• 步骤1：删除内容完全相同的记录（保留最新）\n"
+            "• 步骤2：删除被其它记录包含的子集记录（保留最大超集）\n"
+            "• 步骤3：删除空白记录\n\n"
+            "此操作不可撤销。"
+        ):
             try:
-                count = self.db.deduplicate_drafts()
-                if count > 0:
-                    messagebox.showinfo("完成", f"清理成功！\n共删除了 {count} 条重复记录。")
+                count1 = self.db.deduplicate_drafts()
+                count2 = self.db.deduplicate_drafts_superset()
+                total = count1 + count2
+                if total > 0:
+                    messagebox.showinfo(
+                        "完成",
+                        f"清理成功！\n完全重复删除 {count1} 条\n超集/空白删除 {count2} 条"
+                    )
                 else:
-                    messagebox.showinfo("完成", "没有发现重复记录，列表很干净。")
+                    messagebox.showinfo("完成", "没有需要清理的记录。")
                 self.refresh_data()
             except Exception as e:
                 messagebox.showerror("错误", f"清理失败: {str(e)}")
