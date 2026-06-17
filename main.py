@@ -88,7 +88,7 @@ class SafeDraftApp:
 
             self.setup_tray()
 
-            alpha = float(self.db.get_setting("window_alpha", "0.95"))
+            alpha = float(self.db.get_setting("window_alpha", "1.0"))
             self.root.attributes("-alpha", alpha)
 
             self.root.protocol("WM_DELETE_WINDOW", self.on_close_window)

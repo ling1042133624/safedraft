@@ -528,7 +528,7 @@ class SettingsDialog(tk.Toplevel):
     def __init__(self, parent, db, watcher, app):
         super().__init__(parent)
         self.title("设置")
-        self.geometry("480x650")
+        self.geometry("480x760")
         self.db = db
         self.watcher = watcher
         self.app = app
@@ -676,9 +676,12 @@ class SettingsDialog(tk.Toplevel):
                  bg=self.colors["bg"], fg="#e74c3c",
                  font=("Arial", 11, "bold")).pack(anchor="w", pady=(0, 5))
 
-        tk.Button(f, text="⬆️ 强制推送（覆盖远程）",
+        tk.Button(f, text="⬆️  强制推送（覆盖远程）",
                   command=self.on_force_push,
-                  bg="#e74c3c", fg="white", relief="flat", padx=10).pack(anchor="w", pady=5)
+                  bg="#e74c3c", fg="white", relief="raised",
+                  padx=20, pady=8, height=2, cursor="hand2",
+                  activebackground="#c0392b",
+                  font=("Arial", 10, "bold")).pack(anchor="w", pady=5)
 
         tk.Label(f, text="* 此操作会用本地数据库完全覆盖远程。\n"
                          "* 推送前会自动备份远程现有数据为 safedraft.db.bak.YYYYMMDD_HHMMSS。\n"
