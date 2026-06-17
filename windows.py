@@ -484,7 +484,7 @@ class HistoryWindow(tk.Toplevel):
         for row in self.history_data:
             try:
                 dt = datetime.fromisoformat(row[3])
-                time_str = dt.strftime("%H:%M") if dt.date() == datetime.now().date() else dt.strftime("%m/%d %H:%M")
+                time_str = dt.strftime("%Y/%m/%d %H:%M")
                 content = row[1].strip().replace("\n", " ")
                 if len(content) > 30: content = content[:30] + "..."
                 self.listbox.insert("end", f"[{time_str}] {content}")
