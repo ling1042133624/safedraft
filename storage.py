@@ -12,19 +12,19 @@ import paramiko
 
 # 默认触发器配置
 DEFAULT_TRIGGERS = [
-    ("title", "ChatGPT", 1),
-    ("title", "Claude", 1),
-    ("title", "DeepSeek", 1),
-    ("title", "Gemini", 1),
-    ("title", "Copilot", 1),
-    ("title", "文心一言", 1),
-    ("title", "通义千问", 1),
-    ("title", "Kimi", 1),
-    ("process", "winword.exe", 1),
-    ("process", "wps.exe", 1),
-    ("process", "notepad.exe", 1),
-    ("process", "feishu.exe", 1),
-    ("process", "dingtalk.exe", 1),
+    ("title", "ChatGPT", 0),
+    ("title", "Claude", 0),
+    ("title", "DeepSeek", 0),
+    ("title", "Gemini", 0),
+    ("title", "Copilot", 0),
+    ("title", "文心一言", 0),
+    ("title", "通义千问", 0),
+    ("title", "Kimi", 0),
+    ("process", "winword.exe", 0),
+    ("process", "wps.exe", 0),
+    ("process", "notepad.exe", 0),
+    ("process", "feishu.exe", 0),
+    ("process", "dingtalk.exe", 0),
 ]
 
 
@@ -75,7 +75,7 @@ class StorageManager:
                 )''')
             self.cursor.execute('''CREATE TABLE IF NOT EXISTS triggers_v2 (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    rule_type TEXT, value TEXT, enabled INTEGER DEFAULT 1,
+                    rule_type TEXT, value TEXT, enabled INTEGER DEFAULT 0,
                     UNIQUE(rule_type, value)
                 )''')
             self.cursor.execute('''CREATE TABLE IF NOT EXISTS settings (key TEXT PRIMARY KEY, value TEXT)''')
@@ -118,7 +118,7 @@ class StorageManager:
                 self.cursor.executemany(
                     'INSERT OR IGNORE INTO triggers_v2 (rule_type, value, enabled) VALUES (?, ?, ?)', DEFAULT_TRIGGERS)
 
-            self.cursor.execute('INSERT OR IGNORE INTO settings (key, value) VALUES (?, ?)', ("theme", "Deep"))
+            self.cursor.execute('INSERT OR IGNORE INTO settings (key, value) VALUES (?, ?)', ("theme", "Light"))
             self.conn.commit()
 
     # --- SSH Sync Features ---
@@ -446,6 +446,55 @@ class StorageManager:
             sftp.close()
             ssh.close()
 
+    def force_push_overwrite(self, server_ip, remote_path):
+        """强制推送：用本地 DB 完全覆盖远程。
+        1. 远程现有 safedraft.db 备份为 safedraft.db.bak.YYYYMMDD_HHMMSS
+        2. 上传本地 safedraft.db 覆盖远程
+        3. 更新本地 MD5 状态文件
+        4. 删除远程所有旧 safedraft_*.md5
+        5. 上传新的 safedraft_{hash}.md5
+        """
+        if not server_ip or not remote_path:
+            raise ValueError("配置不完整")
+
+        ssh = self._get_ssh_client(server_ip)
+        sftp = ssh.open_sftp()
+
+        try:
+            remote_base = remote_path.rstrip('/')
+            remote_file = f"{remote_base}/safedraft.db"
+
+            try:
+                sftp.stat(remote_file)
+                backup_name = f"safedraft.db.bak.{datetime.now().strftime('%Y%m%d_%H%M%S')}"
+                remote_backup = f"{remote_base}/{backup_name}"
+                sftp.rename(remote_file, remote_backup)
+            except FileNotFoundError:
+                pass
+            except IOError:
+                pass
+
+            with self.lock:
+                self.conn.commit()
+            sftp.put(self.db_path, remote_file)
+
+            md5_hash = self.update_md5_status()
+
+            for fname in sftp.listdir(remote_base):
+                if fname.startswith("safedraft_") and fname.endswith(".md5"):
+                    try:
+                        sftp.remove(f"{remote_base}/{fname}")
+                    except Exception:
+                        pass
+
+            local_status = os.path.join(self.base_path, f"safedraft_{md5_hash}.md5")
+            remote_md5 = f"{remote_base}/safedraft_{md5_hash}.md5"
+            sftp.put(local_status, remote_md5)
+
+        finally:
+            sftp.close()
+            ssh.close()
+
     def add_observer(self, callback):
         if callback not in self._observers: self._observers.append(callback)
 
@@ -566,6 +615,51 @@ class StorageManager:
         self._notify_observers()
         return deleted_count
 
+    def deduplicate_drafts_superset(self):
+        """删除被其它记录包含的子集记录，以及空白记录。
+        严格大小写、不 strip；空白记录直接删除。
+        返回删除条数。"""
+        with self.lock:
+            self.cursor.execute('SELECT id, content FROM drafts ORDER BY id ASC')
+            rows = self.cursor.fetchall()
+
+            to_delete = set()
+            non_blank = []
+
+            for rid, content in rows:
+                if content is None or content.strip() == "":
+                    to_delete.add(rid)
+                else:
+                    non_blank.append((rid, content))
+
+            n = len(non_blank)
+            for i in range(n):
+                id_a, content_a = non_blank[i]
+                if id_a in to_delete:
+                    continue
+                for j in range(n):
+                    if i == j:
+                        continue
+                    id_b, content_b = non_blank[j]
+                    if id_b in to_delete:
+                        continue
+                    if content_a != content_b and content_a in content_b:
+                        to_delete.add(id_a)
+                        break
+
+            if to_delete:
+                placeholders = ",".join("?" * len(to_delete))
+                self.cursor.execute(
+                    f'DELETE FROM drafts WHERE id IN ({placeholders})',
+                    tuple(to_delete),
+                )
+                self.conn.commit()
+
+            deleted_count = len(to_delete)
+
+        self._notify_observers()
+        return deleted_count
+
     def get_history(self, keyword=None):
         with self.lock:
             if keyword:
@@ -607,7 +701,7 @@ class StorageManager:
 
     def add_trigger(self, rtype, val):
         with self.lock:
-            self.cursor.execute('INSERT OR IGNORE INTO triggers_v2 (rule_type, value, enabled) VALUES (?, ?, 1)',
+            self.cursor.execute('INSERT OR IGNORE INTO triggers_v2 (rule_type, value, enabled) VALUES (?, ?, 0)',
                                 (rtype, val))
             self.conn.commit()
 

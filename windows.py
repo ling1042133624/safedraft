@@ -332,13 +332,25 @@ class HistoryWindow(tk.Toplevel):
                 self.restore_callback(content)
 
     def on_deduplicate(self):
-        if messagebox.askyesno("清理确认", "确定要扫描并删除所有内容重复的记录吗？\n\n仅保留最新的一条记录。"):
+        if messagebox.askyesno(
+            "清理确认",
+            "确定要扫描并清理重复记录吗？\n\n"
+            "• 步骤1：删除内容完全相同的记录（保留最新）\n"
+            "• 步骤2：删除被其它记录包含的子集记录（保留最大超集）\n"
+            "• 步骤3：删除空白记录\n\n"
+            "此操作不可撤销。"
+        ):
             try:
-                count = self.db.deduplicate_drafts()
-                if count > 0:
-                    messagebox.showinfo("完成", f"清理成功！\n共删除了 {count} 条重复记录。")
+                count1 = self.db.deduplicate_drafts()
+                count2 = self.db.deduplicate_drafts_superset()
+                total = count1 + count2
+                if total > 0:
+                    messagebox.showinfo(
+                        "完成",
+                        f"清理成功！\n完全重复删除 {count1} 条\n超集/空白删除 {count2} 条"
+                    )
                 else:
-                    messagebox.showinfo("完成", "没有发现重复记录，列表很干净。")
+                    messagebox.showinfo("完成", "没有需要清理的记录。")
                 self.refresh_data()
             except Exception as e:
                 messagebox.showerror("错误", f"清理失败: {str(e)}")
@@ -484,7 +496,7 @@ class HistoryWindow(tk.Toplevel):
         for row in self.history_data:
             try:
                 dt = datetime.fromisoformat(row[3])
-                time_str = dt.strftime("%H:%M") if dt.date() == datetime.now().date() else dt.strftime("%m/%d %H:%M")
+                time_str = dt.strftime("%Y/%m/%d %H:%M")
                 content = row[1].strip().replace("\n", " ")
                 if len(content) > 30: content = content[:30] + "..."
                 self.listbox.insert("end", f"[{time_str}] {content}")
@@ -657,6 +669,43 @@ class SettingsDialog(tk.Toplevel):
                          "* 活跃时间段格式: HH:MM (24小时制)，留空表示全天候。",
                  bg=self.colors["bg"], fg="#888888", justify="left").pack(anchor="w")
 
+        # --- 强制推送（覆盖远程） ---
+        ttk.Separator(f, orient="horizontal").pack(fill="x", pady=15)
+
+        tk.Label(f, text="强制推送（覆盖远程）",
+                 bg=self.colors["bg"], fg="#e74c3c",
+                 font=("Arial", 11, "bold")).pack(anchor="w", pady=(0, 5))
+
+        tk.Button(f, text="⬆️ 强制推送（覆盖远程）",
+                  command=self.on_force_push,
+                  bg="#e74c3c", fg="white", relief="flat", padx=10).pack(anchor="w", pady=5)
+
+        tk.Label(f, text="* 此操作会用本地数据库完全覆盖远程。\n"
+                         "* 推送前会自动备份远程现有数据为 safedraft.db.bak.YYYYMMDD_HHMMSS。\n"
+                         "* 不会合并任何数据。",
+                 bg=self.colors["bg"], fg="#888888", justify="left").pack(anchor="w")
+
+    def on_force_push(self):
+        if self.db.get_setting("ssh_enabled", "0") != "1":
+            messagebox.showerror("未启用", "请先勾选'启用服务器同步功能'")
+            return
+        ip = self.db.get_setting("ssh_ip", "")
+        path = self.db.get_setting("ssh_path", "")
+        if not ip or not path:
+            messagebox.showerror("配置不完整", "请先填写服务器 IP 和远程目录路径")
+            return
+        if not messagebox.askyesno(
+            "危险操作确认",
+            "此操作会用本地数据库完全覆盖远程数据。\n\n"
+            "远程现有数据将被备份为 safedraft.db.bak.YYYYMMDD_HHMMSS。\n"
+            "此操作不可撤销。确定继续？"
+        ):
+            return
+        self.app._run_async_sync(
+            self.db.force_push_overwrite, ip, path,
+            "强制推送成功（远程已覆盖并备份）"
+        )
+
     def _load_sync_config(self):
         """读取 sync_config.json"""
         config_path = os.path.join(self.db.base_path, "sync_config.json")
@@ -739,7 +788,7 @@ class SettingsDialog(tk.Toplevel):
         frame_theme = tk.Frame(self.page_general, bg=self.colors["bg"], pady=20)
         frame_theme.pack(fill="x", padx=20)
         tk.Label(frame_theme, text="界面主题:", bg=self.colors["bg"], fg=self.colors["fg"]).pack(side="left")
-        current_theme = self.db.get_setting("theme", "Deep")
+        current_theme = self.db.get_setting("theme", "Light")
         self.combo_theme = ttk.Combobox(frame_theme, values=["Deep", "Light"], state="readonly", width=10)
         self.combo_theme.set(current_theme)
         self.combo_theme.pack(side="left", padx=10)
@@ -749,7 +798,7 @@ class SettingsDialog(tk.Toplevel):
         frame_alpha = tk.Frame(self.page_general, bg=self.colors["bg"], pady=10)
         frame_alpha.pack(fill="x", padx=20)
         tk.Label(frame_alpha, text="窗口透明度:", bg=self.colors["bg"], fg=self.colors["fg"]).pack(side="left")
-        current_alpha = float(self.db.get_setting("window_alpha", "0.95"))
+        current_alpha = float(self.db.get_setting("window_alpha", "1.0"))
         self.scale_alpha = tk.Scale(frame_alpha, from_=0.2, to=1.0, resolution=0.05, orient="horizontal",
                                     bg=self.colors["bg"], fg=self.colors["fg"], highlightthickness=0,
                                     activebackground=self.colors["accent"], bd=0, length=200,
@@ -776,7 +825,7 @@ class SettingsDialog(tk.Toplevel):
         frame_exit = tk.Frame(self.page_general, bg=self.colors["bg"], pady=20)
         frame_exit.pack(fill="x", padx=20)
         tk.Label(frame_exit, text="关闭主窗口时:", bg=self.colors["bg"], fg=self.colors["fg"]).pack(side="left")
-        current_exit = self.db.get_setting("exit_action", "ask")
+        current_exit = self.db.get_setting("exit_action", "tray")
         self.combo_exit = ttk.Combobox(frame_exit, values=["ask", "tray", "quit"], state="readonly", width=10)
         self.exit_map = {"ask": "每次询问", "tray": "最小化到托盘", "quit": "退出程序"}
         self.exit_map_rev = {v: k for k, v in self.exit_map.items()}
@@ -814,7 +863,7 @@ class SettingsDialog(tk.Toplevel):
         # 1. 全局开关
         frame_master = tk.Frame(self.page_rules, bg=self.colors["bg"], pady=10)
         frame_master.pack(fill="x", padx=10)
-        current_master = self.db.get_setting("master_monitor", "1")
+        current_master = self.db.get_setting("master_monitor", "0")
         self.var_master = tk.BooleanVar(value=(current_master == "1"))
         cb_master = tk.Checkbutton(frame_master, text="启用智能感知 (自动弹出)", variable=self.var_master,
                                    bg=self.colors["bg"], fg=self.colors["fg"], selectcolor=self.colors["accent"],
